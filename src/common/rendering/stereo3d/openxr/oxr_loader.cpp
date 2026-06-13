@@ -1,6 +1,7 @@
 #include "oxr_loader.h"
 #include "cmdlib.h"
 #include "common/engine/printf.h"
+#include "../../../../QzDoom/DOOMXR_Android.h"
 #include <cstring>
 #include <vector>
 #include <string>
@@ -138,6 +139,31 @@ namespace
 		if (!IsOpenXRPresent())
 			return false;
 
+#ifdef __ANDROID__
+		PFN_xrInitializeLoaderKHR xrInitializeLoaderKHR = nullptr;
+		if (XR_SUCCEEDED(xrGetInstanceProcAddr(XR_NULL_HANDLE, "xrInitializeLoaderKHR", reinterpret_cast<PFN_xrVoidFunction*>(&xrInitializeLoaderKHR))) &&
+			xrInitializeLoaderKHR != nullptr)
+		{
+			JavaVM* vm = DOOMXR_GetJavaVm();
+			jobject activityObject = DOOMXR_GetActivityObject();
+			if (vm == nullptr || activityObject == nullptr)
+			{
+				Printf("OpenXR Vulkan bootstrap: Android loader init skipped because VM/activity is not ready\n");
+				return false;
+			}
+
+			XrLoaderInitInfoAndroidKHR loaderInitInfo{ XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR };
+			loaderInitInfo.applicationVM = vm;
+			loaderInitInfo.applicationContext = activityObject;
+			XrResult loaderInitResult = xrInitializeLoaderKHR(reinterpret_cast<XrLoaderInitInfoBaseHeaderKHR*>(&loaderInitInfo));
+			if (XR_FAILED(loaderInitResult))
+			{
+				Printf("OpenXR Vulkan bootstrap: xrInitializeLoaderKHR failed (%d)\n", int(loaderInitResult));
+				return false;
+			}
+		}
+#endif
+
 		uint32_t extensionCount = 0;
 		if (XR_FAILED(xrEnumerateInstanceExtensionProperties(nullptr, 0, &extensionCount, nullptr)) || extensionCount == 0)
 			return false;
@@ -168,16 +194,22 @@ namespace
 			enabledExtensions.push_back(XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME);
 
 		XrApplicationInfo appInfo{};
-		appInfo.apiVersion = XR_API_VERSION_1_0;
+		appInfo.apiVersion = XR_CURRENT_API_VERSION;
 		appInfo.applicationVersion = 1;
 		appInfo.engineVersion = 1;
-		strncpy(appInfo.applicationName, "DoomXR", sizeof(appInfo.applicationName) - 1);
+		strncpy(appInfo.applicationName, "DoomXReality", sizeof(appInfo.applicationName) - 1);
 		strncpy(appInfo.engineName, "DoomXR", sizeof(appInfo.engineName) - 1);
 
 		XrInstanceCreateInfo createInfo{ XR_TYPE_INSTANCE_CREATE_INFO };
 		createInfo.applicationInfo = appInfo;
 		createInfo.enabledExtensionCount = (uint32_t)enabledExtensions.size();
 		createInfo.enabledExtensionNames = enabledExtensions.data();
+#ifdef __ANDROID__
+		XrInstanceCreateInfoAndroidKHR createInfoAndroid{ XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR };
+		createInfoAndroid.applicationVM = DOOMXR_GetJavaVm();
+		createInfoAndroid.applicationActivity = DOOMXR_GetActivityObject();
+		createInfo.next = &createInfoAndroid;
+#endif
 		if (XR_FAILED(xrCreateInstance(&createInfo, &ctx.instance)))
 			return false;
 
@@ -253,6 +285,13 @@ bool QueryOpenXRVulkanBootstrapInfo(OpenXRVulkanBootstrapInfo& outInfo)
 		cachedInfo = {};
 		OpenXRTmpBootstrapContext ctx;
 		cachedOk = CreateBootstrapContext(ctx, &cachedInfo);
+		Printf("OpenXR Vulkan bootstrap: available=%d cachedOk=%d instExt=%d devExt=%d minApi=%" PRIu64 " maxApi=%" PRIu64 "\n",
+			cachedInfo.available ? 1 : 0,
+			cachedOk ? 1 : 0,
+			int(cachedInfo.requiredInstanceExtensions.size()),
+			int(cachedInfo.requiredDeviceExtensions.size()),
+			static_cast<uint64_t>(cachedInfo.minApiVersionSupported),
+			static_cast<uint64_t>(cachedInfo.maxApiVersionSupported));
 		DestroyBootstrapContext(ctx);
 	}
 

@@ -265,8 +265,6 @@ CUSTOM_CVAR(Int, vid_rendermode, 4, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOIN
 
 	// No further checks needed. All this changes now is which scene drawer the render backend calls.
 }
-#else
-CVAR(Int, vid_rendermode, 4, 0);
 #endif
 
 CUSTOM_CVAR (Int, fraglimit, 0, CVAR_SERVERINFO)
@@ -853,7 +851,7 @@ static void DrawRateStuff()
 	static uint64_t LastMS = 0, LastSec = 0, FrameCount = 0, LastTic = 0;
 
 	// Draws frame time and cumulative fps
-	if (vid_fps)
+	if (vid_fps && twod != nullptr && screen != nullptr && NewConsoleFont != nullptr)
 	{
 		CalcFps();
 		char fpsbuff[40];
@@ -1195,14 +1193,46 @@ void D_Display ()
 	FTexture *wipestart = nullptr;
 	int wipe_type;
 	sector_t *viewsec;
+	static int dDisplayEntryLogs = 0;
+	static int dDisplayEarlyReturnLogs = 0;
+	static int dDisplayBeginFrameLogs = 0;
+
+	if (dDisplayEntryLogs < 4)
+	{
+		Printf("D_Display: entry #%d AppActive=%d screen=%p nodrawers=%d isVulkan=%d backend=%d size=%dx%d\n",
+			dDisplayEntryLogs + 1,
+			AppActive ? 1 : 0,
+			screen,
+			nodrawers ? 1 : 0,
+			screen != nullptr && screen->IsVulkan() ? 1 : 0,
+			screen != nullptr ? screen->Backend() : -1,
+			screen != nullptr ? screen->GetWidth() : 0,
+			screen != nullptr ? screen->GetHeight() : 0);
+		dDisplayEntryLogs++;
+	}
 
 	if (nodrawers || screen == NULL)
+	{
+		if (dDisplayEarlyReturnLogs < 4)
+		{
+			Printf("D_Display: returning early because nodrawers=%d screen=%p\n",
+				nodrawers ? 1 : 0, screen);
+			dDisplayEarlyReturnLogs++;
+		}
 		return; 				// for comparative timing / profiling
+	}
 
 	auto vrmode = VRMode::GetVRModeCached(true);
 	if (!AppActive && (screen->IsFullscreen() || !vid_activeinbackground) &&
 		(vrmode == nullptr || !vrmode->IsVR()))
 	{
+		if (dDisplayEarlyReturnLogs < 4)
+		{
+			Printf("D_Display: returning early because AppActive=%d fullscreen=%d vid_activeinbackground=%d vrmode=%p isVR=%d\n",
+				AppActive ? 1 : 0, screen->IsFullscreen() ? 1 : 0, vid_activeinbackground ? 1 : 0,
+				vrmode, (vrmode != nullptr && vrmode->IsVR()) ? 1 : 0);
+			dDisplayEarlyReturnLogs++;
+		}
 		return;
 	}
 
@@ -1303,6 +1333,11 @@ void D_Display ()
 	screen->FrameTime = I_msTimeFS();
 	TexAnim.UpdateAnimations(screen->FrameTime);
 	R_UpdateSky(screen->FrameTime);
+	if (dDisplayBeginFrameLogs < 4)
+	{
+		Printf("D_Display: calling screen->BeginFrame #%d\n", dDisplayBeginFrameLogs + 1);
+		dDisplayBeginFrameLogs++;
+	}
 	screen->BeginFrame();
 	twod->ClearClipRect();
 	if ((gamestate == GS_LEVEL || gamestate == GS_TITLELEVEL) && gametic != 0)
@@ -1520,6 +1555,7 @@ void D_ErrorCleanup ()
 void D_DoomLoop ()
 {
 	int lasttic = 0;
+	static int doomLoopIterationLogs = 0;
 
 	// Clamp the timer to TICRATE until the playloop has been entered.
 	r_NoInterpolate = true;
@@ -1565,9 +1601,18 @@ void D_DoomLoop ()
 			{
 				TryRunTics (); // will run at least one tic
 			}
+			if (doomLoopIterationLogs < 4)
+			{
+				Printf("D_DoomLoop: iteration=%d gametic=%d maketic=%d\n", doomLoopIterationLogs + 1, gametic, maketic);
+			}
 			// Update display, next frame, with current state.
 			I_StartTic ();
 			D_ProcessEvents();
+			if (doomLoopIterationLogs < 4)
+			{
+				Printf("D_DoomLoop: calling D_Display iteration=%d\n", doomLoopIterationLogs + 1);
+				doomLoopIterationLogs++;
+			}
 			D_Display ();
 			S_UpdateMusic();
 			if (wantToRestart)
@@ -4216,6 +4261,7 @@ static int D_DoomMain_Internal (void)
 		D_DoAnonStats();
 		I_UpdateWindowTitle();
 		I_FocusWindow();
+		Printf("D_DoomMain_Internal: entering D_DoomLoop\n");
 		D_DoomLoop ();		// this only returns if a 'restart' CCMD is given.
 		// 
 		// Clean up after a restart

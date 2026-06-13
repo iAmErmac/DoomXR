@@ -1,0 +1,4 @@
+APP_PLATFORM := android-24
+APP_STL := c++_shared
+APP_ALLOW_MISSING_DEPS := true
+APP_SHORT_COMMANDS := true

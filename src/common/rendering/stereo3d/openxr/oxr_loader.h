@@ -15,6 +15,9 @@
 #include <windows.h>
 #include <unknwn.h> // Required for IUnknown in openxr_platform.h
 #define XR_USE_PLATFORM_WIN32
+#elif defined(__ANDROID__)
+#define XR_USE_PLATFORM_ANDROID
+#include <jni.h>
 #endif
 
 #ifdef HAVE_VULKAN
@@ -23,8 +26,8 @@
 #define XR_USE_GRAPHICS_API_VULKAN
 #endif
 
-// Do not define OpenXR functions as exports, we will load them ourselves
-#ifndef XR_NO_PROTOTYPES
+// Only disable OpenXR prototypes when this build is using the dynamic loader wrappers.
+#if defined(DYN_OPENXR) && !defined(XR_NO_PROTOTYPES)
 #define XR_NO_PROTOTYPES
 #endif
 

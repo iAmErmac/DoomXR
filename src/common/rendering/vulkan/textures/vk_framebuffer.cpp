@@ -23,6 +23,7 @@
 #include <zvulkan/vulkanobjects.h>
 #include <zvulkan/vulkandevice.h>
 #include <zvulkan/vulkanbuilders.h>
+#include <zvulkan/vulkansurface.h>
 #include <zvulkan/vulkanswapchain.h>
 #include "v_video.h"
 #include "hw_vrmodes.h"
@@ -31,6 +32,54 @@
 #include "vulkan/renderer/vk_postprocess.h"
 #include "hw_cvars.h"
 #include "vk_framebuffer.h"
+
+#ifdef __ANDROID__
+#include <android/native_window.h>
+
+ANativeWindow* DOOMXR_GetNativeWindow();
+
+namespace
+{
+	bool RefreshAndroidVulkanSurface(VulkanRenderDevice* fb, ANativeWindow* nativeWindow)
+	{
+		if (fb == nullptr || fb->device == nullptr || fb->device->Surface == nullptr || fb->device->Surface->Instance == nullptr || nativeWindow == nullptr)
+			return false;
+
+		ANativeWindow_acquire(nativeWindow);
+		const int drawableWidth = ANativeWindow_getWidth(nativeWindow);
+		const int drawableHeight = ANativeWindow_getHeight(nativeWindow);
+		if (drawableWidth <= 0 || drawableHeight <= 0)
+		{
+			ANativeWindow_release(nativeWindow);
+			return false;
+		}
+
+		auto& surface = fb->device->Surface->Surface;
+		if (surface != VK_NULL_HANDLE)
+		{
+			vkDestroySurfaceKHR(fb->device->Surface->Instance->Instance, surface, nullptr);
+			surface = VK_NULL_HANDLE;
+		}
+
+		VkAndroidSurfaceCreateInfoKHR createInfo = {};
+		createInfo.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+		createInfo.window = nativeWindow;
+
+		auto createAndroidSurface = reinterpret_cast<PFN_vkCreateAndroidSurfaceKHR>(
+			vkGetInstanceProcAddr(fb->device->Surface->Instance->Instance, "vkCreateAndroidSurfaceKHR"));
+		VkSurfaceKHR newSurface = VK_NULL_HANDLE;
+		const VkResult result = createAndroidSurface != nullptr
+			? createAndroidSurface(fb->device->Surface->Instance->Instance, &createInfo, nullptr, &newSurface)
+			: VK_ERROR_EXTENSION_NOT_PRESENT;
+		ANativeWindow_release(nativeWindow);
+		if (result != VK_SUCCESS || newSurface == VK_NULL_HANDLE)
+			return false;
+
+		surface = newSurface;
+		return true;
+	}
+}
+#endif
 
 CVAR(Bool, vk_hdr, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 CVAR(Bool, vk_exclusivefullscreen, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
@@ -49,6 +98,10 @@ VkFramebufferManager::VkFramebufferManager(VulkanRenderDevice* fb) : fb(fb)
 	RenderFinishedSemaphore = SemaphoreBuilder()
 		.DebugName("RenderFinishedSemaphore")
 		.Create(fb->device.get());
+
+#ifdef __ANDROID__
+	CurrentNativeWindowHandle = reinterpret_cast<uintptr_t>(DOOMXR_GetNativeWindow());
+#endif
 }
 
 VkFramebufferManager::~VkFramebufferManager()
@@ -57,6 +110,36 @@ VkFramebufferManager::~VkFramebufferManager()
 
 void VkFramebufferManager::AcquireImage()
 {
+#ifdef __ANDROID__
+	ANativeWindow* nativeWindow = DOOMXR_GetNativeWindow();
+	const uintptr_t nativeWindowHandle = reinterpret_cast<uintptr_t>(nativeWindow);
+	const bool surfaceChanged = nativeWindowHandle != CurrentNativeWindowHandle;
+	const bool missingSurface = fb->device == nullptr || fb->device->Surface == nullptr || fb->device->Surface->Surface == VK_NULL_HANDLE;
+	if (surfaceChanged)
+	{
+		CurrentNativeWindowHandle = nativeWindowHandle;
+		Framebuffers.clear();
+		SwapChain->Reset();
+	}
+
+	if (nativeWindow == nullptr)
+	{
+		Framebuffers.clear();
+		SwapChain->Reset();
+		return;
+	}
+
+	if (surfaceChanged || missingSurface)
+	{
+		if (!RefreshAndroidVulkanSurface(fb, nativeWindow))
+		{
+			Framebuffers.clear();
+			SwapChain->Reset();
+			return;
+		}
+	}
+#endif
+
 	bool exclusiveFullscreen = fb->IsFullscreen() && vk_exclusivefullscreen;
 	if (SwapChain->Lost() || fb->GetClientWidth() != CurrentWidth || fb->GetClientHeight() != CurrentHeight || fb->GetVSync() != CurrentVSync || CurrentHdr != vk_hdr || CurrentExclusiveFullscreen != exclusiveFullscreen)
 	{

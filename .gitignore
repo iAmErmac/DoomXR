@@ -1,5 +1,6 @@
 # build artifacts
 /build*
+/java/
 /wadsrc/*.pk3
 .flatpak-builder/
 *.AppImage
@@ -7,6 +8,8 @@
 flatpak/
 gzdoom-crash.log
 fmodapi*linux/
+/libs/*
+/obj/*
 
 # editor/tooling/os files
 *~
@@ -60,3 +63,4 @@ fmodapi*linux/
 /build_vc2019-32
 /build__
 gzdoom-crash.log
+/docs/*

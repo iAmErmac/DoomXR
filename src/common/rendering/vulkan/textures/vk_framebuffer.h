@@ -3,6 +3,7 @@
 
 #include "zvulkan/vulkanobjects.h"
 #include <array>
+#include <cstdint>
 #include <map>
 
 class VulkanRenderDevice;
@@ -33,4 +34,5 @@ private:
 	bool CurrentVSync = false;
 	bool CurrentHdr = false;
 	bool CurrentExclusiveFullscreen = false;
+	uintptr_t CurrentNativeWindowHandle = 0;
 };

@@ -3,14 +3,14 @@ LOCAL_PATH := $(call my-dir)/../src
 
 include $(CLEAR_VARS)
 
-LOCAL_MODULE    := qzdoom
+LOCAL_MODULE    := doomxr
 
 # https://developer.android.com/ndk/guides/android_mk#local_cflags
-LOCAL_CFLAGS   := -D__MOBILE__ -DOPNMIDI_DISABLE_GX_EMULATOR -DGZDOOM -D__STDINT_LIMITS -DENGINE_NAME=\"gzdoom\"
+LOCAL_CFLAGS   := -D__MOBILE__ -DOPNMIDI_DISABLE_GX_EMULATOR -DGZDOOM -D__STDINT_LIMITS -DENGINE_NAME=\"gzdoom\" -DHAVE_VULKAN -DUSE_VULKAN -DVK_USE_PLATFORM_ANDROID_KHR
 
 # https://developer.android.com/ndk/guides/android_mk#local_cppflags
 LOCAL_CPPFLAGS := -include g_pch.h -std=c++17 -Wno-switch -Wno-inconsistent-missing-override -Werror=format-security \
-    -fexceptions -fpermissive -Dstricmp=strcasecmp -Dstrnicmp=strncasecmp -D__forceinline=inline -DNO_GTK -DNO_SSE -fsigned-char
+    -fexceptions -fpermissive -Dstricmp=strcasecmp -Dstrnicmp=strncasecmp -D__forceinline=inline -DNO_GTK -DNO_SSE -fsigned-char -DUSE_VULKAN
 
 LOCAL_CFLAGS  += -DNO_SEND_STATS -DMINIZ_NO_STDIO -DUSE_OPENXR -DNO_SWRENDERER
 
@@ -54,6 +54,7 @@ LOCAL_C_INCLUDES := \
     	$(GZDOOM_TOP_PATH)/src/common/rendering/gl_load \
     	$(GZDOOM_TOP_PATH)/src/common/rendering/gl \
     	$(GZDOOM_TOP_PATH)/src/common/rendering/gles \
+    	$(GZDOOM_TOP_PATH)/src/common/rendering/vulkan/thirdparty \
     	$(GZDOOM_TOP_PATH)/src/common/scripting/vm \
     	$(GZDOOM_TOP_PATH)/src/common/scripting/jit \
     	$(GZDOOM_TOP_PATH)/src/common/scripting/core \
@@ -90,6 +91,7 @@ LOCAL_C_INCLUDES := \
         $(GZDOOM_TOP_PATH)/libraries/miniz \
         $(GZDOOM_TOP_PATH)/libraries/webp/include \
 		$(GZDOOM_TOP_PATH)/libraries/ZWidget/include \
+        $(GZDOOM_TOP_PATH)/libraries/ZVulkan/include \
         $(GZDOOM_TOP_PATH)/libraries/discordrpc/include \
 \
  $(SUPPORT_LIBS)/openal/include/AL \
@@ -150,6 +152,29 @@ FASTMATH_SOURCES = \
 	rendering/hwrenderer/scene/hw_walls_vertex.cpp \
 	rendering/hwrenderer/scene/hw_weapon.cpp \
 	common/utility/matrix.cpp \
+
+
+VULKAN_SOURCES = \
+	common/rendering/vulkan/system/vk_renderdevice.cpp \
+	common/rendering/vulkan/system/vk_commandbuffer.cpp \
+	common/rendering/vulkan/system/vk_hwbuffer.cpp \
+	common/rendering/vulkan/system/vk_buffer.cpp \
+	common/rendering/vulkan/renderer/vk_renderstate.cpp \
+	common/rendering/vulkan/renderer/vk_renderpass.cpp \
+	common/rendering/vulkan/renderer/vk_streambuffer.cpp \
+	common/rendering/vulkan/renderer/vk_postprocess.cpp \
+	common/rendering/vulkan/renderer/vk_pprenderstate.cpp \
+	common/rendering/vulkan/renderer/vk_descriptorset.cpp \
+	common/rendering/vulkan/renderer/vk_raytrace.cpp \
+	common/rendering/vulkan/shaders/vk_shader.cpp \
+	common/rendering/vulkan/shaders/vk_ppshader.cpp \
+	common/rendering/vulkan/textures/vk_samplers.cpp \
+	common/rendering/vulkan/textures/vk_hwtexture.cpp \
+	common/rendering/vulkan/textures/vk_pptexture.cpp \
+	common/rendering/vulkan/textures/vk_imagetransition.cpp \
+	common/rendering/vulkan/textures/vk_renderbuffers.cpp \
+	common/rendering/vulkan/textures/vk_texture.cpp \
+	common/rendering/vulkan/textures/vk_framebuffer.cpp \
 
 
 
@@ -279,6 +304,8 @@ PCH_SOURCES = \
 	rendering/hwrenderer/scene/hw_drawlistadd.cpp \
 	rendering/hwrenderer/scene/hw_setcolor.cpp \
 	gl/stereo3d/gl_openxrdevice.cpp \
+	common/rendering/stereo3d/openxr/oxr_loader.cpp \
+	common/rendering/vulkan/stereo3d/vk_openxrdevice.cpp \
 	maploader/edata.cpp \
 	maploader/specials.cpp \
 	maploader/maploader.cpp \
@@ -469,6 +496,7 @@ PCH_SOURCES = \
 	common/engine/m_joy.cpp \
 	common/engine/m_random.cpp \
 	common/objects/autosegs.cpp \
+	common/rendering/hwrenderer/data/hw_vrwheel.cpp \
 	common/objects/dobject.cpp \
 	common/objects/dobjgc.cpp \
 	common/objects/dobjtype.cpp \
@@ -557,6 +585,7 @@ LOCAL_SRC_FILES = \
 	$(PLAT_POSIX_SOURCES) \
 	$(PLAT_NOSDL_SOURCES) \
 	$(FASTMATH_SOURCES) \
+	$(VULKAN_SOURCES) \
 	$(PCH_SOURCES) \
 	common/utility/x86.cpp \
 	common/thirdparty/strnatcmp.c \
@@ -613,15 +642,17 @@ LOCAL_LDLIBS := -ldl -llog -lOpenSLES -landroid
 LOCAL_LDLIBS += -lGLESv3
 
 LOCAL_LDLIBS +=  -lEGL
+LOCAL_LDLIBS +=  -lvulkan
 
 # This is stop a linker warning for mp123 lib failing build
 #LOCAL_LDLIBS += -Wl,--no-warn-shared-textrel
 
-LOCAL_STATIC_LIBRARIES :=  lzma_gl3 bzip2_gl3 vpx_player webpmux zwidget
+LOCAL_STATIC_LIBRARIES :=  lzma_gl3 bzip2_gl3 vpx_player webpmux zwidget glslang_doomxr
 LOCAL_SHARED_LIBRARIES :=  openal openxr_loader zmusic
 
 #Strip unused functions/data
 LOCAL_CFLAGS += -fvisibility=hidden -fdata-sections -ffunction-sections  -fPIC
+LOCAL_LDFLAGS += -Wl,-z,nostart-stop-gc
 LOCAL_LDFLAGS += -Wl,--gc-sections -flto
 
 include $(BUILD_SHARED_LIBRARY)

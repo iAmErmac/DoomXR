@@ -60,6 +60,7 @@
 #include "version.h"
 #include "i_interface.h"
 #include "menu.h"
+#include <QzDoom/VrCommon.h>
 #include "gl_load/gl_system.h"
 
 #include "gl_renderer.h"
@@ -67,10 +68,13 @@
 #include "actorinlines.h"
 #include "LSMatrix.h"
 #include "hw_vrwheel.h"
+#ifdef USE_OPENVR
 #include "gl/stereo3d/gl_openvr.h"
+#endif
 #include "gl/stereo3d/gl_openxrdevice.h"
+#if defined(USE_OPENXR) && defined(USE_VULKAN)
 #include "vulkan/stereo3d/vk_openxrdevice.h"
-#include <QzDoom/VrCommon.h>
+#endif
 
 #include "textures.h"
 #include "gametexture.h"
@@ -333,6 +337,20 @@ const VRMode *VRMode::GetVRModeCached(bool toscreen)
 	const int currentVrMode = (int)vr_mode;
 	const int currentBackend = V_GetBackend();
 	const bool currentDisableTextureFilter = sysCallbacks.DisableTextureFilter && sysCallbacks.DisableTextureFilter();
+	static int getVrModeCacheLogs = 0;
+	if (getVrModeCacheLogs < 8)
+	{
+		Printf("VRMode::GetVRModeCached #%d toscreen=%d vr_mode=%d backend=%d disableTextureFilter=%d screen=%p isVulkan=%d frameTime=%" PRIu64 "\n",
+			getVrModeCacheLogs + 1,
+			toscreen ? 1 : 0,
+			currentVrMode,
+			currentBackend,
+			currentDisableTextureFilter ? 1 : 0,
+			screen,
+			screen != nullptr && screen->IsVulkan() ? 1 : 0,
+			(uint64_t)frameTime);
+		getVrModeCacheLogs++;
+	}
 
 	if (entry.valid &&
 		entry.frameTime == frameTime &&
@@ -527,12 +545,12 @@ VRMode::VRMode(int eyeCount, float horizontalViewportScale,
 
 }
 
-static float DEG2RAD(float deg)
+static float VR_DegreesToRadians(float deg)
 {
 	return deg * float(M_PI / 180.0);
 }
 
-static float RAD2DEG(float rad)
+static float VR_RadiansToDegrees(float rad)
 {
 	return rad * float(180. / M_PI);
 }
@@ -554,7 +572,7 @@ static const char* VRModeName(int mode)
 #ifdef USE_OPENVR
 	case VR_OPENVR: return "openvr";
 #endif
-#ifdef USE_OPENXR
+#if defined(USE_OPENXR) && defined(USE_VULKAN)
 	case VR_OPENXR_MOBILE: return "openxr";
 #endif
 	default: return "unknown";
@@ -645,7 +663,7 @@ const VRMode *VRMode::GetVRMode(bool toscreen)
 		//return vrmi_openvr.IsInitialized() ? &vrmi_openvr : &vrmi_mono;
 	}
 #endif
-#ifdef USE_OPENXR
+#if defined(USE_OPENXR) && defined(USE_VULKAN)
 	case VR_OPENXR_MOBILE:
 		if (V_GetBackend() == 1)
 		{
@@ -710,7 +728,7 @@ VSMatrix VREyeInfo::GetProjection(float fov, float aspectRatio, float fovRatio, 
 		double zNear = -3.0/fovRatio; // screen->GetZNear();
 		double zFar = screen->GetZFar();
 
-		double fH = tan(DEG2RAD(fov) / 2) / fovRatio;
+		double fH = tan(VR_DegreesToRadians(fov) / 2) / fovRatio;
 		double fW = fH * aspectRatio * mScaleFactor;
 		double left = -fW;
 		double right = fW;
@@ -723,7 +741,7 @@ VSMatrix VREyeInfo::GetProjection(float fov, float aspectRatio, float fovRatio, 
 	}
 	else if (mShiftFactor == 0)
 	{
-		float fovy = (float)(2 * RAD2DEG(atan(tan(DEG2RAD(fov) / 2) / fovRatio)));
+		float fovy = (float)(2 * VR_RadiansToDegrees(atan(tan(VR_DegreesToRadians(fov) / 2) / fovRatio)));
 		result.perspective(fovy, aspectRatio, screen->GetZNear(), screen->GetZFar());
 		return result;
 	}
@@ -737,7 +755,7 @@ VSMatrix VREyeInfo::GetProjection(float fov, float aspectRatio, float fovRatio, 
 		// A: No. (lab) roll is not measured on desktop display (yet)
 		double frustumShift = zNear * getShift() / vr_screendist; // meters cancel, leaving doom units
 																  // double frustumShift = 0; // Turning off shift for debugging
-		double fH = zNear * tan(DEG2RAD(fov) / 2) / fovRatio;
+		double fH = zNear * tan(VR_DegreesToRadians(fov) / 2) / fovRatio;
 		double fW = fH * aspectRatio * mScaleFactor;
 		double left = -fW - frustumShift;
 		double right = fW - frustumShift;
@@ -777,8 +795,8 @@ DVector3 VREyeInfo::GetViewShift(FRenderViewpoint& vp) const
 	else
 	{
 		float yaw = vp.HWAngles.Yaw.Degrees();
-		double dx = -cos(DEG2RAD(yaw)) * vr_vunits_per_meter * getShift();
-		double dy = sin(DEG2RAD(yaw)) * vr_vunits_per_meter * getShift();
+		double dx = -cos(VR_DegreesToRadians(yaw)) * vr_vunits_per_meter * getShift();
+		double dy = sin(VR_DegreesToRadians(yaw)) * vr_vunits_per_meter * getShift();
 		return { dx, dy, 0 };
 	}
 }

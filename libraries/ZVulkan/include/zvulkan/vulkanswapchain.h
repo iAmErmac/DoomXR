@@ -10,6 +10,7 @@ class VulkanSurfaceCapabilities
 {
 public:
 	VkSurfaceCapabilitiesKHR Capabilites = { };
+	bool SurfaceLost = false;
 #ifdef WIN32
 	VkSurfaceCapabilitiesFullScreenExclusiveEXT FullScreenExclusive = { VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_FULL_SCREEN_EXCLUSIVE_EXT };
 #else
@@ -26,6 +27,7 @@ public:
 	~VulkanSwapChain();
 
 	void Create(int width, int height, int imageCount, bool vsync, bool hdr, bool exclusivefullscreen);
+	void Reset();
 	bool Lost() const { return lost; }
 
 	int Width() const { return actualExtent.width; }

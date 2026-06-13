@@ -40,6 +40,12 @@
 
 #include "version.h"	// for GAMENAME
 
+const char * GetDataPath()
+{
+	static FString dataPath = "/sdcard/doomxr";
+	return dataPath.GetChars();
+}
+
 FString M_GetAppDataPath(bool create)
 {
 	// Don't use GAME_DIR and such so that ZDoom and its child ports can

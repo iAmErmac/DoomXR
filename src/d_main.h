@@ -165,7 +165,7 @@ constexpr int vid_rendermode = 4;
 
 inline bool V_IsHardwareRenderer()
 {
-	return vid_rendermode == 4;
+	return vid_rendermode == 4 || (screen != nullptr && screen->IsVulkan());
 }
 
 // Unfortunately Intel forces on filtering if mipmapping is enabled, so None modes of filtering

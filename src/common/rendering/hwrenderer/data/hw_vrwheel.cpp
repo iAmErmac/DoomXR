@@ -1081,7 +1081,7 @@ namespace
 		return (M_PI * 0.5) - (slice * localIndex) + ring.AngleOffset;
 	}
 
-	static double DotProduct(const DVector3& a, const DVector3& b)
+	static double VRWheel_DotProduct(const DVector3& a, const DVector3& b)
 	{
 		return a.X * b.X + a.Y * b.Y + a.Z * b.Z;
 	}
@@ -1100,8 +1100,8 @@ namespace
 		}
 
 		const DVector3 delta = touchPoint - center;
-		const double planeX = DotProduct(delta, wheelRight);
-		const double planeY = DotProduct(delta, wheelUp);
+		const double planeX = VRWheel_DotProduct(delta, wheelRight);
+		const double planeY = VRWheel_DotProduct(delta, wheelUp);
 		const double radialDistance = sqrt((planeX * planeX) + (planeY * planeY));
 		const double switchRadius = layout.Rings[0].Radius * 0.58;
 		return radialDistance <= switchRadius ? 0 : 1;

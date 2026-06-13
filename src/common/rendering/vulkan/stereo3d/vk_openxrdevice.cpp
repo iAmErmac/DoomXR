@@ -14,6 +14,7 @@
 #include "zvulkan/vulkanbuilders.h"
 #include "zvulkan/vulkancompatibledevice.h"
 #include "zvulkan/vulkanswapchain.h"
+#include "QzDoom/DOOMXR_Android.h"
 #include "QzDoom/VrCommon.h"
 #include "d_player.h"
 #include "g_game.h"
@@ -172,6 +173,10 @@ PFN_xrEnumerateDisplayRefreshRatesFB xrEnumerateDisplayRefreshRatesFB_inst = nul
 PFN_xrGetDisplayRefreshRateFB xrGetDisplayRefreshRateFB_inst = nullptr;
 PFN_xrRequestDisplayRefreshRateFB xrRequestDisplayRefreshRateFB_inst = nullptr;
 #endif
+#ifdef XR_FB_COLOR_SPACE_EXTENSION_NAME
+PFN_xrEnumerateColorSpacesFB xrEnumerateColorSpacesFB_inst = nullptr;
+PFN_xrSetColorSpaceFB xrSetColorSpaceFB_inst = nullptr;
+#endif
 
 static const std::vector<XrExtensionProperties>& GetOpenXRExtensions()
 {
@@ -254,7 +259,7 @@ static XrColorSpaceFB SelectPreferredColorSpace(const std::vector<XrColorSpaceFB
 	return supportedColorSpaces.empty() ? XR_COLOR_SPACE_UNMANAGED_FB : supportedColorSpaces.front();
 }
 
-static float DEG2RAD(float deg)
+static float OpenXR_DegreesToRadians(float deg)
 {
 	return deg * (float)(M_PI / 180.0);
 }
@@ -528,71 +533,18 @@ struct XrSafeSourceRect
 
 static void GetStableOpenXRVirtualScreenSize(uint32_t& width, uint32_t& height)
 {
-	// Keep the virtual screen aligned with the live UI render size. The menu code still lays itself out
-	// from the active screen dimensions, so forcing the OpenXR quad into a synthetic 4:3 target can make
-	// the visible menu narrower than the pointer/raycast area.
-	constexpr uint32_t kFallbackW = 960;
-	constexpr uint32_t kFallbackH = 720;
-	constexpr uint32_t kMinW = 640;
-	constexpr uint32_t kMinH = 360;
-	constexpr uint32_t kMaxW = 2048;
-	constexpr uint32_t kMaxH = 2048;
-	constexpr uint64_t kMaxPixels = 2048ull * 1536ull;
-
-	uint32_t sourceW = (screen != nullptr) ? (uint32_t)std::max(0, screen->GetWidth()) : 0u;
-	uint32_t sourceH = (screen != nullptr) ? (uint32_t)std::max(0, screen->GetHeight()) : 0u;
-	if (sourceW == 0 || sourceH == 0)
-	{
-		sourceW = (uint32_t)std::max(0, DisplayWidth);
-		sourceH = (uint32_t)std::max(0, DisplayHeight);
-	}
-	if (sourceW == 0 || sourceH == 0)
-	{
-		sourceW = (uint32_t)std::max(0, (int)vid_defwidth);
-		sourceH = (uint32_t)std::max(0, (int)vid_defheight);
-	}
-	if (sourceW == 0 || sourceH == 0)
-	{
-		sourceW = kFallbackW;
-		sourceH = kFallbackH;
-	}
-
-	sourceW = std::clamp(sourceW, kMinW, kMaxW);
-	sourceH = std::clamp(sourceH, kMinH, kMaxH);
-
-	uint32_t targetW = sourceW;
-	uint32_t targetH = sourceH;
-
-	uint64_t pixels = (uint64_t)targetW * (uint64_t)targetH;
-	if (pixels > kMaxPixels)
-	{
-		const double scale = std::sqrt((double)kMaxPixels / (double)pixels);
-		targetW = std::max<uint32_t>(kMinW, (uint32_t)std::floor((double)targetW * scale));
-		targetH = std::max<uint32_t>(kMinH, (uint32_t)std::floor((double)targetH * scale));
-	}
-	targetW &= ~1u;
-	targetH &= ~1u;
-	if (targetW == 0 || targetH == 0)
-	{
-		targetW = kFallbackW;
-		targetH = kFallbackH;
-	}
-
-	width = targetW;
-	height = targetH;
+	constexpr uint32_t kTargetW = 1400;
+	constexpr uint32_t kTargetH = 1400;
+	width = kTargetW;
+	height = kTargetH;
 }
 
 static void GetOpenXRVirtualScreenMeters(uint32_t renderW, uint32_t renderH, float& widthMeters, float& heightMeters)
 {
 	const float baseWidthMeters = std::max(0.1f, (1.0f + vr_overlayscreen_size) * 1.2f);
-	if (renderW == 0 || renderH == 0)
-	{
-		GetStableOpenXRVirtualScreenSize(renderW, renderH);
-	}
-
+	const float aspect = (renderW > 0 && renderH > 0) ? ((float)renderW / (float)renderH) : (4.0f / 3.0f);
 	widthMeters = baseWidthMeters;
-	// Match the texture aspect exactly. Any extra height fudge makes pointer hit area drift away from rendered menu edges
-	heightMeters = std::max(0.1f, baseWidthMeters * ((float)renderH / (float)std::max(renderW, 1u)));
+	heightMeters = std::max(0.1f, baseWidthMeters / std::max(0.1f, aspect));
 }
 
 static float YawDegFromForward(const XrVector3f& forwardIn)
@@ -716,11 +668,11 @@ static const char* FrameRenderModeName(VKOpenXRDeviceMode::FrameRenderMode mode)
 	}
 }
 
-static void AngleVectors(const float angles[3], float* forward, float* right, float* up)
+static void OpenXR_AngleVectors(const float angles[3], float* forward, float* right, float* up)
 {
-	const float pitch = (float)(angles[0] * (M_PI / 180.0f));
-	const float yaw = (float)(angles[1] * (M_PI / 180.0f));
-	const float roll = (float)(angles[2] * (M_PI / 180.0f));
+	const float pitch = OpenXR_DegreesToRadians(angles[0]);
+	const float yaw = OpenXR_DegreesToRadians(angles[1]);
+	const float roll = OpenXR_DegreesToRadians(angles[2]);
 
 	const float sp = std::sin(pitch);
 	const float cp = std::cos(pitch);
@@ -877,6 +829,8 @@ struct OpenXRHandInputState
 	bool grip = false;
 	bool thumbClick = false;
 	bool menu = false;
+	bool back = false;
+	bool system = false;
 	bool a = false;
 	bool b = false;
 	bool x = false;
@@ -894,6 +848,17 @@ static void PostControllerKeyTransition(bool oldState, bool newState, int key)
 	ev.data1 = key;
 	ev.type = newState ? EV_KeyDown : EV_KeyUp;
 	D_PostEvent(&ev);
+}
+
+static void RequestMainMenuOpen()
+{
+	if (gamestate == GS_INTRO || menuactive != MENU_Off)
+	{
+		return;
+	}
+
+	M_StartControlPanel(true);
+	M_SetMenu(NAME_Mainmenu, -1);
 }
 
 static void PostGuiMouseEvent(EGUIEvent type, int x, int y)
@@ -1524,6 +1489,17 @@ bool VKOpenXRDeviceMode::IsInitialized() const
 	OpenXRVulkanBootstrapInfo xrInfo;
 	xrInitProbeResult = QueryOpenXRVulkanBootstrapInfo(xrInfo);
 	xrInitProbeFrameTime = frameTime;
+	static int xrInitProbeLogs = 0;
+	if (xrInitProbeLogs < 8)
+	{
+		Printf("VKOpenXRDeviceMode::IsInitialized probe #%d result=%d frameTime=%" PRIu64 " instExt=%d devExt=%d\n",
+			xrInitProbeLogs + 1,
+			xrInitProbeResult ? 1 : 0,
+			(uint64_t)frameTime,
+			(int)xrInfo.requiredInstanceExtensions.size(),
+			(int)xrInfo.requiredDeviceExtensions.size());
+		xrInitProbeLogs++;
+	}
 	if (!xrInitProbeResult)
 	{
 		DisableOpenXRModeForCurrentRun("runtime probe failed");
@@ -1691,8 +1667,18 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	OpenXRVulkanBootstrapInfo xrBootstrapInfo;
 	const bool hasBootstrapInfo = QueryOpenXRVulkanBootstrapInfo(xrBootstrapInfo);
 	// Some runtimes expose the loader DLL but do not support Vulkan OpenXR.
-	const bool hasVulkanEnable = hasBootstrapInfo ? xrBootstrapInfo.supportsVulkanEnable : HasOpenXRExtension(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME);
-	const bool hasVulkanEnable2 = hasBootstrapInfo ? xrBootstrapInfo.supportsVulkanEnable2 : HasOpenXRExtension(XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME);
+	const bool runtimeHasVulkanEnable = hasBootstrapInfo ? xrBootstrapInfo.supportsVulkanEnable : HasOpenXRExtension(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME);
+	const bool runtimeHasVulkanEnable2 = hasBootstrapInfo ? xrBootstrapInfo.supportsVulkanEnable2 : HasOpenXRExtension(XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME);
+#ifdef __ANDROID__
+	// The current mobile renderer still creates Vulkan instance/device objects itself.
+	// Prefer the legacy KHR path on Android because some runtimes validate more strictly
+	// when vulkan_enable2 is active and expect runtime-created Vulkan objects.
+	const bool hasVulkanEnable = runtimeHasVulkanEnable;
+	const bool hasVulkanEnable2 = !hasVulkanEnable && runtimeHasVulkanEnable2;
+#else
+	const bool hasVulkanEnable = runtimeHasVulkanEnable;
+	const bool hasVulkanEnable2 = runtimeHasVulkanEnable2;
+#endif
 	if (!hasVulkanEnable && !hasVulkanEnable2)
 	{
 		Printf("OpenXR: runtime does not advertise %s or %s, skipping OpenXR initialization.\n",
@@ -1702,6 +1688,33 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 
 
 	std::vector<const char*> extensions;
+#ifdef __ANDROID__
+	if (HasOpenXRExtension(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME))
+		extensions.push_back(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME);
+
+	PFN_xrInitializeLoaderKHR xrInitializeLoaderKHR = nullptr;
+	if (XR_SUCCEEDED(xrGetInstanceProcAddr(XR_NULL_HANDLE, "xrInitializeLoaderKHR", reinterpret_cast<PFN_xrVoidFunction*>(&xrInitializeLoaderKHR))) &&
+		xrInitializeLoaderKHR != nullptr)
+	{
+		JavaVM* vm = DOOMXR_GetJavaVm();
+		jobject activityObject = DOOMXR_GetActivityObject();
+		if (vm == nullptr || activityObject == nullptr)
+		{
+			Printf("OpenXR: Android loader init skipped because VM/activity is not ready\n");
+			return fail();
+		}
+
+		XrLoaderInitInfoAndroidKHR loaderInitInfo{ XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR };
+		loaderInitInfo.applicationVM = vm;
+		loaderInitInfo.applicationContext = activityObject;
+		XrResult loaderInitResult = xrInitializeLoaderKHR(reinterpret_cast<XrLoaderInitInfoBaseHeaderKHR*>(&loaderInitInfo));
+		if (XR_FAILED(loaderInitResult))
+		{
+			Printf("OpenXR: xrInitializeLoaderKHR failed result=%d\n", (int)loaderInitResult);
+			return fail();
+		}
+	}
+#endif
 	if (hasVulkanEnable)
 		extensions.push_back(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME);
 	if (hasVulkanEnable2)
@@ -1733,19 +1746,27 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	}
 #endif
 	XrApplicationInfo appInfo{};
-	appInfo.apiVersion = XR_API_VERSION_1_0;
+	appInfo.apiVersion = XR_CURRENT_API_VERSION;
 	appInfo.applicationVersion = 1;
 	appInfo.engineVersion = 1;
-	strncpy(appInfo.applicationName, "DoomXR", sizeof(appInfo.applicationName) - 1);
+	strncpy(appInfo.applicationName, "DoomXReality", sizeof(appInfo.applicationName) - 1);
 	strncpy(appInfo.engineName, "DoomXR", sizeof(appInfo.engineName) - 1);
 
 	XrInstanceCreateInfo instanceInfo{ XR_TYPE_INSTANCE_CREATE_INFO };
 	instanceInfo.applicationInfo = appInfo;
 	instanceInfo.enabledExtensionCount = (uint32_t)extensions.size();
 	instanceInfo.enabledExtensionNames = extensions.data();
-	XrResult xrResult = xrCreateInstance(&instanceInfo, &xrInstance);
+	XrResult xrResult = XR_SUCCESS;
+#ifdef __ANDROID__
+	XrInstanceCreateInfoAndroidKHR instanceInfoAndroid{ XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR };
+	instanceInfoAndroid.applicationVM = DOOMXR_GetJavaVm();
+	instanceInfoAndroid.applicationActivity = DOOMXR_GetActivityObject();
+	instanceInfo.next = &instanceInfoAndroid;
+#endif
+	xrResult = xrCreateInstance(&instanceInfo, &xrInstance);
 	if (XR_FAILED(xrResult))
 	{
+		Printf("OpenXR: xrCreateInstance failed result=%d extCount=%u\n", (int)xrResult, instanceInfo.enabledExtensionCount);
 		return fail();
 	}
 
@@ -1774,11 +1795,23 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 		}
 	}
 #endif
+#ifdef XR_FB_COLOR_SPACE_EXTENSION_NAME
+	if (xrHasFBColorSpace)
+	{
+		loadProc("xrEnumerateColorSpacesFB", reinterpret_cast<PFN_xrVoidFunction*>(&xrEnumerateColorSpacesFB_inst));
+		loadProc("xrSetColorSpaceFB", reinterpret_cast<PFN_xrVoidFunction*>(&xrSetColorSpaceFB_inst));
+		if (xrEnumerateColorSpacesFB_inst == nullptr || xrSetColorSpaceFB_inst == nullptr)
+		{
+			xrHasFBColorSpace = false;
+		}
+	}
+#endif
 
 	XrSystemGetInfo systemInfo{ XR_TYPE_SYSTEM_GET_INFO };
 	systemInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
 	if (XR_FAILED(xrGetSystem(xrInstance, &systemInfo, &xrSystemId)))
 	{
+		Printf("OpenXR: xrGetSystem failed\n");
 		return fail();
 	}
 
@@ -1793,6 +1826,7 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	{
 		if (XR_FAILED(xrGetVulkanGraphicsRequirements2KHR_inst(xrInstance, xrSystemId, &graphicsRequirements)))
 		{
+			Printf("OpenXR: xrGetVulkanGraphicsRequirements2KHR failed\n");
 			return fail();
 		}
 	}
@@ -1800,6 +1834,7 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	{
 		if (XR_FAILED(xrGetVulkanGraphicsRequirementsKHR_inst(xrInstance, xrSystemId, &graphicsRequirements)))
 		{
+			Printf("OpenXR: xrGetVulkanGraphicsRequirementsKHR failed\n");
 			return fail();
 		}
 	}
@@ -1819,10 +1854,12 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 		getInfo.vulkanInstance = xrVkInstance->Instance;
 		if (XR_FAILED(xrGetVulkanGraphicsDevice2KHR_inst(xrInstance, &getInfo, &xrPhysicalDevice)))
 		{
+			Printf("OpenXR: xrGetVulkanGraphicsDevice2KHR failed\n");
 			return fail();
 		}
 		if (xrVkDevice->PhysicalDevice.Device != xrPhysicalDevice)
 		{
+			Printf("OpenXR: runtime requested different physical device\n");
 			return fail();
 		}
 	}
@@ -1830,10 +1867,12 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	{
 		if (XR_FAILED(xrGetVulkanGraphicsDeviceKHR_inst(xrInstance, xrSystemId, xrVkInstance->Instance, &xrPhysicalDevice)))
 		{
+			Printf("OpenXR: xrGetVulkanGraphicsDeviceKHR failed\n");
 			return fail();
 		}
 		if (xrVkDevice->PhysicalDevice.Device != xrPhysicalDevice)
 		{
+			Printf("OpenXR: runtime requested different physical device\n");
 			return fail();
 		}
 	}
@@ -1862,19 +1901,20 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	}
 	if (XR_FAILED(xrResult))
 	{
+		Printf("OpenXR: xrCreateSession failed result=%d\n", (int)xrResult);
 		return fail();
 	}
 
-	if (xrHasFBColorSpace && xrEnumerateColorSpacesFB && xrSetColorSpaceFB)
+	if (xrHasFBColorSpace && xrEnumerateColorSpacesFB_inst && xrSetColorSpaceFB_inst)
 	{
 		uint32_t colorSpaceCount = 0;
-		if (XR_SUCCEEDED(xrEnumerateColorSpacesFB(xrSession, 0, &colorSpaceCount, nullptr)) && colorSpaceCount > 0)
+		if (XR_SUCCEEDED(xrEnumerateColorSpacesFB_inst(xrSession, 0, &colorSpaceCount, nullptr)) && colorSpaceCount > 0)
 		{
 			std::vector<XrColorSpaceFB> supportedColorSpaces(colorSpaceCount);
-			if (XR_SUCCEEDED(xrEnumerateColorSpacesFB(xrSession, colorSpaceCount, &colorSpaceCount, supportedColorSpaces.data())))
+			if (XR_SUCCEEDED(xrEnumerateColorSpacesFB_inst(xrSession, colorSpaceCount, &colorSpaceCount, supportedColorSpaces.data())))
 			{
 				const XrColorSpaceFB requestedColorSpace = SelectPreferredColorSpace(supportedColorSpaces);
-				if (XR_SUCCEEDED(xrSetColorSpaceFB(xrSession, requestedColorSpace)))
+				if (XR_SUCCEEDED(xrSetColorSpaceFB_inst(xrSession, requestedColorSpace)))
 				{
 					if (developer > 0)
 						Printf("OpenXR: requested FB color space %d from %u supported modes.\n", (int)requestedColorSpace, colorSpaceCount);
@@ -1898,6 +1938,7 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 		spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
 		if (XR_FAILED(xrCreateReferenceSpace(xrSession, &spaceInfo, &xrSpace)))
 		{
+			Printf("OpenXR: xrCreateReferenceSpace failed for stage and local spaces\n");
 			return fail();
 		}
 	}
@@ -1931,6 +1972,8 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	createAction("hand_pose", "Hand Pose", XR_ACTION_TYPE_POSE_INPUT, xrPoseAction);
 	createAction("select", "Select", XR_ACTION_TYPE_BOOLEAN_INPUT, xrSelectAction);
 	createAction("menu", "Menu", XR_ACTION_TYPE_BOOLEAN_INPUT, xrMenuAction);
+	createAction("back", "Back", XR_ACTION_TYPE_BOOLEAN_INPUT, xrBackAction);
+	createAction("system", "System", XR_ACTION_TYPE_BOOLEAN_INPUT, xrSystemAction);
 	createAction("grip", "Grip", XR_ACTION_TYPE_BOOLEAN_INPUT, xrGripAction);
 	createAction("thumb_click", "Thumb Click", XR_ACTION_TYPE_BOOLEAN_INPUT, xrThumbClickAction);
 	createAction("thumbstick", "Thumbstick", XR_ACTION_TYPE_VECTOR2F_INPUT, xrThumbstickAction);
@@ -1965,6 +2008,10 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	XrPath rightHapticPath = XR_NULL_PATH;
 	XrPath leftMenuClickPath = XR_NULL_PATH;
 	XrPath rightMenuClickPath = XR_NULL_PATH;
+	XrPath leftBackClickPath = XR_NULL_PATH;
+	XrPath rightBackClickPath = XR_NULL_PATH;
+	XrPath leftSystemClickPath = XR_NULL_PATH;
+	XrPath rightSystemClickPath = XR_NULL_PATH;
 	XrPath leftSelectClickPath = XR_NULL_PATH;
 	XrPath rightSelectClickPath = XR_NULL_PATH;
 	XrPath leftGripPosePath = XR_NULL_PATH;
@@ -2000,6 +2047,10 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	xrStringToPath(xrInstance, "/user/hand/right/output/haptic", &rightHapticPath);
 	xrStringToPath(xrInstance, "/user/hand/left/input/menu/click", &leftMenuClickPath);
 	xrStringToPath(xrInstance, "/user/hand/right/input/menu/click", &rightMenuClickPath);
+	xrStringToPath(xrInstance, "/user/hand/left/input/back/click", &leftBackClickPath);
+	xrStringToPath(xrInstance, "/user/hand/right/input/back/click", &rightBackClickPath);
+	xrStringToPath(xrInstance, "/user/hand/left/input/system/click", &leftSystemClickPath);
+	xrStringToPath(xrInstance, "/user/hand/right/input/system/click", &rightSystemClickPath);
 	xrStringToPath(xrInstance, "/user/hand/left/input/select/click", &leftSelectClickPath);
 	xrStringToPath(xrInstance, "/user/hand/right/input/select/click", &rightSelectClickPath);
 	xrStringToPath(xrInstance, "/user/hand/left/input/grip/pose", &leftGripPosePath);
@@ -2029,6 +2080,10 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	AddBinding(simpleBindings, xrSelectAction, rightSelectClickPath);
 	AddBinding(simpleBindings, xrMenuAction, leftMenuClickPath);
 	AddBinding(simpleBindings, xrMenuAction, rightMenuClickPath);
+	AddBinding(simpleBindings, xrBackAction, leftBackClickPath);
+	AddBinding(simpleBindings, xrBackAction, rightBackClickPath);
+	AddBinding(simpleBindings, xrSystemAction, leftSystemClickPath);
+	AddBinding(simpleBindings, xrSystemAction, rightSystemClickPath);
 	AddBinding(simpleBindings, xrPoseAction, leftAimPosePath);
 	AddBinding(simpleBindings, xrPoseAction, rightAimPosePath);
 	AddBinding(simpleBindings, xrHapticAction, leftHapticPath);
@@ -2046,6 +2101,10 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	AddBinding(viveBindings, xrThumbClickAction, rightTrackpadClickPath);
 	AddBinding(viveBindings, xrMenuAction, leftMenuClickPath);
 	AddBinding(viveBindings, xrMenuAction, rightMenuClickPath);
+	AddBinding(viveBindings, xrBackAction, leftBackClickPath);
+	AddBinding(viveBindings, xrBackAction, rightBackClickPath);
+	AddBinding(viveBindings, xrSystemAction, leftSystemClickPath);
+	AddBinding(viveBindings, xrSystemAction, rightSystemClickPath);
 	AddBinding(viveBindings, xrPoseAction, leftAimPosePath);
 	AddBinding(viveBindings, xrPoseAction, rightAimPosePath);
 	AddBinding(viveBindings, xrHapticAction, leftHapticPath);
@@ -2065,7 +2124,9 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	AddBinding(touchBindings, xrYAction, leftYClickPath);
 	AddBinding(touchBindings, xrAAction, rightPrimaryClickPath);
 	AddBinding(touchBindings, xrBAction, rightSecondaryClickPath);
-	AddBinding(touchBindings, xrMenuAction, leftMenuClickPath);
+	// Match the older QuestZDoom Touch mapping: use the left menu click as the
+	// gameplay "back/menu" action instead of depending on system-reserved paths.
+	AddBinding(touchBindings, xrBackAction, leftMenuClickPath);
 	AddBinding(touchBindings, xrPoseAction, leftAimPosePath);
 	AddBinding(touchBindings, xrPoseAction, rightAimPosePath);
 	AddBinding(touchBindings, xrHapticAction, leftHapticPath);
@@ -2085,6 +2146,9 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	AddBinding(indexBindings, xrYAction, leftYClickPath);
 	AddBinding(indexBindings, xrAAction, rightPrimaryClickPath);
 	AddBinding(indexBindings, xrBAction, rightSecondaryClickPath);
+	AddBinding(indexBindings, xrBackAction, leftBackClickPath);
+	AddBinding(indexBindings, xrSystemAction, leftSystemClickPath);
+	AddBinding(indexBindings, xrSystemAction, rightSystemClickPath);
 	AddBinding(indexBindings, xrPoseAction, leftAimPosePath);
 	AddBinding(indexBindings, xrPoseAction, rightAimPosePath);
 	AddBinding(indexBindings, xrHapticAction, leftHapticPath);
@@ -2102,6 +2166,10 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	AddBinding(wmrBindings, xrThumbstickAction, rightThumbstickPath);
 	AddBinding(wmrBindings, xrMenuAction, leftMenuClickPath);
 	AddBinding(wmrBindings, xrMenuAction, rightMenuClickPath);
+	AddBinding(wmrBindings, xrBackAction, leftBackClickPath);
+	AddBinding(wmrBindings, xrBackAction, rightBackClickPath);
+	AddBinding(wmrBindings, xrSystemAction, leftSystemClickPath);
+	AddBinding(wmrBindings, xrSystemAction, rightSystemClickPath);
 	AddBinding(wmrBindings, xrPoseAction, leftAimPosePath);
 	AddBinding(wmrBindings, xrPoseAction, rightAimPosePath);
 	AddBinding(wmrBindings, xrHapticAction, leftHapticPath);
@@ -2404,8 +2472,8 @@ bool VKOpenXRDeviceMode::CreateVirtualScreenBackdropSwapchain(uint32_t width, ui
 	if (xrSession == XR_NULL_HANDLE || xrVkDevice == nullptr || xrVirtualScreenSwapchainFormat == VK_FORMAT_UNDEFINED || width == 0 || height == 0)
 		return false;
 	if (xrVirtualScreenBackdropSwapchain != XR_NULL_HANDLE &&
-		xrVirtualScreenWidth == width &&
-		xrVirtualScreenHeight == height &&
+		xrVirtualScreenBackdropWidth == width &&
+		xrVirtualScreenBackdropHeight == height &&
 		!xrVirtualScreenBackdropTextures.empty())
 	{
 		return true;
@@ -2469,6 +2537,8 @@ bool VKOpenXRDeviceMode::CreateVirtualScreenBackdropSwapchain(uint32_t width, ui
 			.Create(xrVkDevice.get());
 	}
 
+	xrVirtualScreenBackdropWidth = width;
+	xrVirtualScreenBackdropHeight = height;
 	xrVirtualScreenBackdropVisible = true;
 	return true;
 }
@@ -2555,6 +2625,8 @@ void VKOpenXRDeviceMode::DestroyVirtualScreenBackdropSwapchain() const
 {
 	xrVirtualScreenBackdropVisible = false;
 	xrVirtualScreenBackdropImageIndex = -1;
+	xrVirtualScreenBackdropWidth = 0;
+	xrVirtualScreenBackdropHeight = 0;
 	xrVirtualScreenBackdropTextures.clear();
 	xrVirtualScreenBackdropSwapchainImages.clear();
 	if (xrVirtualScreenBackdropSwapchain != XR_NULL_HANDLE)
@@ -2645,6 +2717,8 @@ void VKOpenXRDeviceMode::DestroyOpenXR() const
 	xrPoseAction = XR_NULL_HANDLE;
 	xrSelectAction = XR_NULL_HANDLE;
 	xrMenuAction = XR_NULL_HANDLE;
+	xrBackAction = XR_NULL_HANDLE;
+	xrSystemAction = XR_NULL_HANDLE;
 	xrGripAction = XR_NULL_HANDLE;
 	xrThumbClickAction = XR_NULL_HANDLE;
 	xrThumbstickAction = XR_NULL_HANDLE;
@@ -2815,40 +2889,43 @@ void VKOpenXRDeviceMode::PollXREvents() const
 	if (xrInstance == XR_NULL_HANDLE)
 		return;
 
-	XrEventDataBuffer eventData{ XR_TYPE_EVENT_DATA_BUFFER };
-	XrResult result = xrPollEvent(xrInstance, &eventData);
-	if (result == XR_EVENT_UNAVAILABLE || !XR_SUCCEEDED(result))
-		return;
-
-	if (eventData.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
+	for (;;)
 	{
+		XrEventDataBuffer eventData{ XR_TYPE_EVENT_DATA_BUFFER };
+		XrResult result = xrPollEvent(xrInstance, &eventData);
+		if (result == XR_EVENT_UNAVAILABLE)
+			return;
+		if (!XR_SUCCEEDED(result))
+			return;
+
+		if (eventData.type != XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
+			continue;
+
 		auto* ev = reinterpret_cast<XrEventDataSessionStateChanged*>(&eventData);
-		if (ev->session == xrSession)
+		if (ev->session != xrSession)
+			continue;
+
+		xrSessionState = ev->state;
+		if (ev->state == XR_SESSION_STATE_READY)
 		{
-			xrSessionState = ev->state;
-			if (ev->state == XR_SESSION_STATE_READY)
-			{
-				isSessionReadyToBegin = true;
-			}
-			else if (ev->state == XR_SESSION_STATE_STOPPING)
-			{
-				StopHaptics();
-				xrEndSession(xrSession);
-				isSessionRunning = false;
-				isSessionReadyToBegin = false;
+			isSessionReadyToBegin = true;
+		}
+		else if (ev->state == XR_SESSION_STATE_STOPPING)
+		{
+			StopHaptics();
+			xrEndSession(xrSession);
+			isSessionRunning = false;
+			isSessionReadyToBegin = false;
 #ifdef XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME
-				xrRequestedDisplayRefreshRate = 0.0f;
-				xrCurrentDisplayRefreshRate = 0.0f;
+			xrRequestedDisplayRefreshRate = 0.0f;
+			xrCurrentDisplayRefreshRate = 0.0f;
 #endif
-			}
-			else if (ev->state == XR_SESSION_STATE_LOSS_PENDING || ev->state == XR_SESSION_STATE_EXITING)
-			{
-				StopHaptics();
-				DestroyOpenXR();
-			}
-			else
-			{
-			}
+		}
+		else if (ev->state == XR_SESSION_STATE_LOSS_PENDING || ev->state == XR_SESSION_STATE_EXITING)
+		{
+			StopHaptics();
+			DestroyOpenXR();
+			return;
 		}
 	}
 }
@@ -2958,6 +3035,7 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 	}
 
 	const bool menuMode = menuactive != MENU_Off;
+	const bool keybindCaptureMode = menuactive == MENU_WaitKey;
 	const bool gameplayMode = gamestate == GS_LEVEL && !menuMode && !paused;
 	const int mainHand = GetMainHandIndex();
 	const int offHand = GetOffHandIndex();
@@ -2974,6 +3052,8 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		input.grip = GetActionBoolean(xrSession, xrGripAction, handPath);
 		input.thumbClick = GetActionBoolean(xrSession, xrThumbClickAction, handPath);
 		input.menu = GetActionBoolean(xrSession, xrMenuAction, handPath);
+		input.back = GetActionBoolean(xrSession, xrBackAction, handPath);
+		input.system = GetActionBoolean(xrSession, xrSystemAction, handPath);
 		input.a = GetActionBoolean(xrSession, xrAAction, handPath);
 		input.b = GetActionBoolean(xrSession, xrBAction, handPath);
 		input.x = GetActionBoolean(xrSession, xrXAction, handPath);
@@ -3009,6 +3089,27 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		syncHandState(0);
 		syncHandState(1);
 	}
+
+	const bool menuButtonDown =
+		handInput[0].back ||
+		handInput[0].menu || handInput[1].menu ||
+		handInput[0].system || handInput[1].system;
+	const bool dominantFace2Pressed = (mainHand == 1) ? handInput[1].b : handInput[0].y;
+	const bool legacyMenuComboDown =
+		gameplayMode &&
+		*vr_secondary_button_mappings &&
+		handInput[mainHand].grip &&
+		dominantFace2Pressed;
+	const bool menuOpenDown = menuButtonDown || legacyMenuComboDown;
+	if (!keybindCaptureMode && menuOpenDown != xrLastMenuReturnState)
+	{
+		PostControllerKeyTransition(xrLastMenuReturnState, menuOpenDown, KEY_ESCAPE);
+	}
+	if (!keybindCaptureMode && menuOpenDown && !xrLastMenuReturnState)
+	{
+		RequestMainMenuOpen();
+	}
+	xrLastMenuReturnState = keybindCaptureMode ? false : menuOpenDown;
 
 	const bool dominantGripModifierNew = *vr_secondary_button_mappings && handInput[mainHand].grip;
 	const bool dominantGripModifierOld = *vr_secondary_button_mappings && xrLastGripState[mainHand];
@@ -3256,10 +3357,6 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		const bool dominantHand = (hand == mainHand);
 		const bool modifierOld = dominantGripModifierOld;
 		const bool modifierNew = dominantGripModifierNew;
-		const int handOffset = HandKeyOffset(hand);
-		const int axisOffset = HandAxisKeyOffset(hand);
-		const int oppositeAxisOffset = HandAxisKeyOffset(1 - hand);
-		const int gripKey = KEY_PAD_LSHOULDER + handOffset;
 		const bool suppressGripButton = dominantHand && *vr_secondary_button_mappings;
 		const bool face1Pressed = hand == 1 ? handInput[hand].a : handInput[hand].x;
 		const bool face2Pressed = hand == 1 ? handInput[hand].b : handInput[hand].y;
@@ -3273,7 +3370,75 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		const int triggerAltKey = dominantHand ? KEY_PAD_LTRIGGER : KEY_LALT;
 		const int thumbBaseKey = dominantHand ? KEY_ENTER : KEY_SPACE;
 		const int thumbAltKey = dominantHand ? KEY_TAB : KEY_HOME;
-		const int gripAltKey = KEY_PAD_DPAD_UP;
+		const int gripBaseKey = dominantHand ? KEY_PAD_LTRIGGER : KEY_PAD_RTHUMB;
+		const int gripAltKey = dominantHand ? KEY_PAD_LTRIGGER : KEY_PAD_DPAD_UP;
+
+		if (keybindCaptureMode)
+		{
+			PostRemappedControllerKeyTransition(xrLastSelectState[hand], handInput[hand].select, modifierOld, modifierNew, triggerBaseKey, triggerAltKey);
+			if (suppressGripButton)
+			{
+				PostControllerKeyTransition(xrLastGripState[hand], false, gripBaseKey);
+			}
+			else if (!dominantHand && *vr_secondary_button_mappings)
+			{
+				PostControllerKeyTransition(
+					xrLastGripState[hand] && !modifierOld,
+					handInput[hand].grip && !modifierNew,
+					gripBaseKey);
+				PostControllerKeyTransition(
+					xrLastGripState[hand] && modifierOld && !vr_two_handed_weapons,
+					handInput[hand].grip && modifierNew && !vr_two_handed_weapons,
+					gripAltKey);
+			}
+			else
+			{
+				PostControllerKeyTransition(xrLastGripState[hand], handInput[hand].grip, gripBaseKey);
+			}
+			PostRemappedControllerKeyTransition(xrLastThumbClickState[hand], handInput[hand].thumbClick, modifierOld, modifierNew, thumbBaseKey, thumbAltKey);
+			if (dominantHand)
+			{
+				PostRemappedControllerKeyTransition(face1Old, face1Pressed, dominantGripModifierOld, dominantGripModifierNew, face1BaseKey, face1AltKey);
+				PostRemappedControllerKeyTransition(face2Old, face2Pressed, dominantGripModifierOld, dominantGripModifierNew, face2BaseKey, face2AltKey);
+			}
+			else if (*vr_secondary_button_mappings)
+			{
+				PostRemappedControllerKeyTransition(face1Old, face1Pressed, modifierOld, modifierNew, face1BaseKey, KEY_PGDN);
+				PostRemappedControllerKeyTransition(face2Old, face2Pressed, modifierOld, modifierNew, face2BaseKey, KEY_PGUP);
+			}
+			else
+			{
+				PostControllerKeyTransition(face1Old, face1Pressed, face1BaseKey);
+				PostControllerKeyTransition(face2Old, face2Pressed, face2BaseKey);
+			}
+
+			if (emitAxes)
+			{
+				const XrVector2f& lastAxisState = useTrackpad ? xrLastTrackpadState[hand] : xrLastThumbstickState[hand];
+				const XrVector2f& newAxisState = useTrackpad ? handInput[hand].trackpad : handInput[hand].thumbstick;
+				const int baseLeftKey = hand == 1 ? KEY_JOYAXIS3MINUS : KEY_JOYAXIS1MINUS;
+				const int baseRightKey = hand == 1 ? KEY_JOYAXIS3PLUS : KEY_JOYAXIS1PLUS;
+				const int baseDownKey = hand == 1 ? KEY_JOYAXIS4MINUS : KEY_JOYAXIS2MINUS;
+				const int baseUpKey = hand == 1 ? KEY_JOYAXIS4PLUS : KEY_JOYAXIS2PLUS;
+				const int shiftedLeftKey = hand == 1 ? KEY_JOYAXIS7MINUS : KEY_JOYAXIS5MINUS;
+				const int shiftedRightKey = hand == 1 ? KEY_JOYAXIS7PLUS : KEY_JOYAXIS5PLUS;
+				const int shiftedDownKey = hand == 1 ? KEY_JOYAXIS8MINUS : KEY_JOYAXIS6MINUS;
+				const int shiftedUpKey = hand == 1 ? KEY_JOYAXIS8PLUS : KEY_JOYAXIS6PLUS;
+
+				PostRemappedControllerAxisTransitions(lastAxisState, newAxisState, modifierOld, modifierNew,
+					baseLeftKey,
+					baseRightKey,
+					baseDownKey,
+					baseUpKey,
+					shiftedLeftKey,
+					shiftedRightKey,
+					shiftedDownKey,
+					shiftedUpKey);
+			}
+
+			syncHandState(hand);
+			return;
+		}
 
 		// When virtual menu mouse is active on the right hand, the trigger drives
 		// GUI left-click events. Suppress trigger-as-key to avoid menu key-path
@@ -3293,24 +3458,24 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 			// While the dominant hand grip is acting as a modifier, do not emit it
 			// as a separate button. This keeps grip+B style combos from also firing
 			// the standalone grip binding and matches the OpenVR shift-layer intent.
-			PostControllerKeyTransition(xrLastGripState[hand], false, gripKey);
+			PostControllerKeyTransition(xrLastGripState[hand], false, gripBaseKey);
 		}
 		else if (!dominantHand && *vr_secondary_button_mappings)
 		{
-			PostRemappedControllerKeyTransition(xrLastGripState[hand], handInput[hand].grip, modifierOld, modifierNew, gripKey, gripAltKey);
+			PostControllerKeyTransition(
+				xrLastGripState[hand] && !modifierOld,
+				handInput[hand].grip && !modifierNew,
+				gripBaseKey);
+			PostControllerKeyTransition(
+				xrLastGripState[hand] && modifierOld && !vr_two_handed_weapons,
+				handInput[hand].grip && modifierNew && !vr_two_handed_weapons,
+				gripAltKey);
 		}
 		else
 		{
-			PostControllerKeyTransition(xrLastGripState[hand], handInput[hand].grip, gripKey);
+			PostControllerKeyTransition(xrLastGripState[hand], handInput[hand].grip, gripBaseKey);
 		}
 		PostRemappedControllerKeyTransition(xrLastThumbClickState[hand], handInput[hand].thumbClick, modifierOld, modifierNew, thumbBaseKey, thumbAltKey);
-		const int thumbClickKey = (hand == 1) ? KEY_PAD_RTHUMB : KEY_PAD_LTHUMB;
-		// The combo layer already emits the mapped thumb-click action, so keep the
-		// raw button from leaking through while the dominant grip is acting as a modifier.
-		if (!(*vr_secondary_button_mappings && dominantGripModifierNew))
-		{
-			PostControllerKeyTransition(xrLastThumbClickState[hand], handInput[hand].thumbClick, thumbClickKey);
-		}
 		if (dominantHand)
 		{
 			PostRemappedControllerKeyTransition(face1Old, face1Pressed, dominantGripModifierOld, dominantGripModifierNew, face1BaseKey, face1AltKey);
@@ -3359,7 +3524,6 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 	xrMenuPointerBeamVisible = false;
 	xrMenuPointerBeamLength = 0.0f;
 	menu_allow_mouse_override = false;
-	const bool keybindCaptureMode = menuactive == MENU_WaitKey;
 
 	// Keep the virtual screen pose in sync with the current frame before casting the OpenXR menu pointer ray.
 	// Otherwise the ray/beam can intersect last frame's quad transform while the actual menu layer is updated
@@ -3810,13 +3974,30 @@ bool VKOpenXRDeviceMode::BeginXRFrame() const
 	++xrFrameCounter;
 
 	if (xrSession == XR_NULL_HANDLE || xrVkDevice == nullptr)
+	{
+		static int missingSessionLogs = 0;
+		if (missingSessionLogs < 4)
+		{
+			Printf("OpenXR: BeginXRFrame aborted, session=%p vkDevice=%p\n", xrSession, xrVkDevice.get());
+			missingSessionLogs++;
+		}
 		return false;
+	}
 
 	if (xrSwapchain == XR_NULL_HANDLE && !CreateSwapchain())
+	{
+		Printf("OpenXR: BeginXRFrame failed to create swapchain\n");
 		return false;
+	}
 
 	if (gamestate == GS_LEVEL && (r_viewpoint.camera == nullptr || r_viewpoint.ViewLevel == nullptr))
 	{
+		static int missingViewLogs = 0;
+		if (missingViewLogs < 4)
+		{
+			Printf("OpenXR: BeginXRFrame waiting for gameplay camera/viewlevel\n");
+			missingViewLogs++;
+		}
 		return false;
 	}
 
@@ -3828,30 +4009,55 @@ bool VKOpenXRDeviceMode::BeginXRFrame() const
 		if (XR_SUCCEEDED(r))
 		{
 			isSessionRunning = true;
+			Printf("OpenXR: xrBeginSession succeeded at frame %" PRIu64 "\n", nextFrame);
 			ApplyRefreshRate();
 		}
 		else
+		{
+			Printf("OpenXR: xrBeginSession failed result=%d\n", (int)r);
 			return false;
+		}
 		isSessionReadyToBegin = false;
 	}
 
 	if (!isSessionRunning)
+	{
+		static int sessionNotRunningLogs = 0;
+		if (sessionNotRunningLogs < 8)
+		{
+			Printf("OpenXR: BeginXRFrame waiting, session state=%d ready=%d running=%d frame=%" PRIu64 "\n",
+				(int)xrSessionState, isSessionReadyToBegin ? 1 : 0, isSessionRunning ? 1 : 0, nextFrame);
+			sessionNotRunningLogs++;
+		}
 		return false;
+	}
 
 	if (xrFrameInProgress)
 	{
+		static int frameInProgressLogs = 0;
+		if (frameInProgressLogs < 4)
+		{
+			Printf("OpenXR: BeginXRFrame called while frame already in progress\n");
+			frameInProgressLogs++;
+		}
 		return false;
 	}
 
 	XrFrameWaitInfo waitInfo{ XR_TYPE_FRAME_WAIT_INFO };
 	XrResult xrResult = xrWaitFrame(xrSession, &waitInfo, &xrFrameState);
 	if (XR_FAILED(xrResult))
+	{
+		Printf("OpenXR: xrWaitFrame failed result=%d\n", (int)xrResult);
 		return false;
+	}
 
 	XrFrameBeginInfo beginInfo{ XR_TYPE_FRAME_BEGIN_INFO };
 	xrResult = xrBeginFrame(xrSession, &beginInfo);
 	if (XR_FAILED(xrResult))
+	{
+		Printf("OpenXR: xrBeginFrame failed result=%d\n", (int)xrResult);
 		return false;
+	}
 
 	XrViewLocateInfo locateInfo{ XR_TYPE_VIEW_LOCATE_INFO };
 	locateInfo.viewConfigurationType = viewType;
@@ -3860,10 +4066,15 @@ bool VKOpenXRDeviceMode::BeginXRFrame() const
 	XrViewState viewState{ XR_TYPE_VIEW_STATE };
 	uint32_t viewCount = xrViewCount;
 	if (viewCount == 0 || xrViews.size() < viewCount || xrProjectionViews.size() < viewCount)
+	{
+		Printf("OpenXR: BeginXRFrame invalid view buffers viewCount=%u views=%u projections=%u\n",
+			viewCount, (unsigned)xrViews.size(), (unsigned)xrProjectionViews.size());
 		return false;
+	}
 	xrResult = xrLocateViews(xrSession, &locateInfo, &viewState, viewCount, &viewCount, xrViews.data());
 	if (XR_FAILED(xrResult))
 	{
+		Printf("OpenXR: xrLocateViews failed result=%d\n", (int)xrResult);
 		XrFrameEndInfo endInfo{ XR_TYPE_FRAME_END_INFO };
 		endInfo.displayTime = xrFrameState.predictedDisplayTime;
 		endInfo.environmentBlendMode = environmentBlendMode;
@@ -3878,6 +4089,13 @@ bool VKOpenXRDeviceMode::BeginXRFrame() const
 	}
 	if ((viewState.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) == 0 || (viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) == 0)
 	{
+	}
+	static int firstSuccessfulFrameLogs = 0;
+	if (firstSuccessfulFrameLogs < 3)
+	{
+		Printf("OpenXR: BeginXRFrame succeeded shouldRender=%d state=%d frame=%" PRIu64 "\n",
+			xrFrameState.shouldRender ? 1 : 0, (int)xrSessionState, nextFrame);
+		firstSuccessfulFrameLogs++;
 	}
 
 	updateHmdPose(r_viewpoint);
@@ -4437,11 +4655,15 @@ void VKOpenXRDeviceMode::updateVirtualScreenLayer() const
 	xrVirtualScreenBackdropLayer.space = xrSpace;
 	xrVirtualScreenBackdropLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
 	xrVirtualScreenBackdropLayer.pose = xrVirtualScreenBackdropPose;
-	xrVirtualScreenBackdropLayer.size = { screenWidth * 6.0f, screenHeight * 6.0f };
+	// Oversize the backdrop aggressively so headset FOV changes or slight pose
+	// mismatches do not let the underlying projection scene peek around the
+	// virtual screen composition.
+	constexpr float kBackdropOverscan = 10.0f;
+	xrVirtualScreenBackdropLayer.size = { screenWidth * kBackdropOverscan, screenHeight * kBackdropOverscan };
 	xrVirtualScreenBackdropLayer.subImage.swapchain = xrVirtualScreenBackdropSwapchain;
 	xrVirtualScreenBackdropLayer.subImage.imageArrayIndex = 0;
 	xrVirtualScreenBackdropLayer.subImage.imageRect.offset = { 0, 0 };
-	xrVirtualScreenBackdropLayer.subImage.imageRect.extent = { (int32_t)xrVirtualScreenWidth, (int32_t)xrVirtualScreenHeight };
+	xrVirtualScreenBackdropLayer.subImage.imageRect.extent = { (int32_t)xrVirtualScreenBackdropWidth, (int32_t)xrVirtualScreenBackdropHeight };
 
 	if (xrHasEquirectBackdrop)
 	{
@@ -4456,7 +4678,7 @@ void VKOpenXRDeviceMode::updateVirtualScreenLayer() const
 		xrVirtualScreenBackdropEquirectLayer.subImage.swapchain = xrVirtualScreenBackdropSwapchain;
 		xrVirtualScreenBackdropEquirectLayer.subImage.imageArrayIndex = 0;
 		xrVirtualScreenBackdropEquirectLayer.subImage.imageRect.offset = { 0, 0 };
-		xrVirtualScreenBackdropEquirectLayer.subImage.imageRect.extent = { (int32_t)xrVirtualScreenWidth, (int32_t)xrVirtualScreenHeight };
+		xrVirtualScreenBackdropEquirectLayer.subImage.imageRect.extent = { (int32_t)xrVirtualScreenBackdropWidth, (int32_t)xrVirtualScreenBackdropHeight };
 	}
 
 }

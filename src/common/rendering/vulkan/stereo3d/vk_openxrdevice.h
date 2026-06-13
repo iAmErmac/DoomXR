@@ -142,6 +142,8 @@ protected:
 	mutable XrSpace xrHandSpaces[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
 	mutable XrAction xrSelectAction = XR_NULL_HANDLE;
 	mutable XrAction xrMenuAction = XR_NULL_HANDLE;
+	mutable XrAction xrBackAction = XR_NULL_HANDLE;
+	mutable XrAction xrSystemAction = XR_NULL_HANDLE;
 	mutable XrAction xrGripAction = XR_NULL_HANDLE;
 	mutable XrAction xrThumbClickAction = XR_NULL_HANDLE;
 	mutable XrAction xrThumbstickAction = XR_NULL_HANDLE;
@@ -204,6 +206,8 @@ protected:
 	mutable int xrMenuPointerBeamImageIndex = -1;
 	mutable uint32_t xrVirtualScreenWidth = 0;
 	mutable uint32_t xrVirtualScreenHeight = 0;
+	mutable uint32_t xrVirtualScreenBackdropWidth = 0;
+	mutable uint32_t xrVirtualScreenBackdropHeight = 0;
 	mutable uint32_t xrPresentWidth = 0;
 	mutable uint32_t xrPresentHeight = 0;
 	mutable int64_t xrSwapchainFormat = VK_FORMAT_UNDEFINED;

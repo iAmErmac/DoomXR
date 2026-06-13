@@ -126,27 +126,53 @@ void VulkanPrintLog(const char* typestr, const std::string& msg)
 VulkanRenderDevice::VulkanRenderDevice(void *hMonitor, bool fullscreen, std::shared_ptr<VulkanSurface> surface) :
 	Super(hMonitor, fullscreen) 
 {
+	Printf("VulkanRenderDevice: begin construction (surface=%p, vr_mode=%d)\n",
+		surface.get(),
+		int(vr_mode));
+
 	VulkanDeviceBuilder builder;
 	builder.OptionalRayQuery();
 	builder.Surface(surface);
 	builder.SelectDevice(vk_device);
 	if (vr_mode == VR_OPENXR_MOBILE)
 	{
+		Printf("VulkanRenderDevice: configuring OpenXR mobile Vulkan requirements\n");
 		OpenXRVulkanBootstrapInfo xrInfo;
 		if (QueryOpenXRVulkanBootstrapInfo(xrInfo))
 		{
+			Printf("VulkanRenderDevice: OpenXR requires %d device extensions\n",
+				int(xrInfo.requiredDeviceExtensions.size()));
 			for (const auto& ext : xrInfo.requiredDeviceExtensions)
+			{
+				Printf("VulkanRenderDevice: requiring device extension %s\n", ext.c_str());
 				builder.RequireExtension(ext);
+			}
+		}
+		else
+		{
+			Printf(TEXTCOLOR_RED "VulkanRenderDevice: QueryOpenXRVulkanBootstrapInfo failed during device setup\n");
 		}
 
 		VkPhysicalDevice preferredDevice = VK_NULL_HANDLE;
 		if (surface != nullptr && surface->Instance != nullptr && QueryOpenXRVulkanPreferredPhysicalDevice(surface->Instance->Instance, preferredDevice))
 		{
+			Printf("VulkanRenderDevice: OpenXR selected preferred physical device %p\n", preferredDevice);
 			builder.PreferredPhysicalDevice(preferredDevice);
 		}
+		else
+		{
+			Printf("VulkanRenderDevice: OpenXR did not provide a preferred physical device\n");
+		}
 	}
+
+	Printf("VulkanRenderDevice: probing compatible Vulkan devices\n");
 	SupportedDevices = builder.FindDevices(surface->Instance);
+	Printf("VulkanRenderDevice: compatible device count=%d\n", int(SupportedDevices.size()));
+
+	Printf("VulkanRenderDevice: creating logical device\n");
 	device = builder.Create(surface->Instance);
+	Printf("VulkanRenderDevice: logical device created (%s)\n",
+		device ? device->PhysicalDevice.Properties.Properties.deviceName : "null");
 }
 
 VulkanRenderDevice::~VulkanRenderDevice()
@@ -174,6 +200,8 @@ VulkanRenderDevice::~VulkanRenderDevice()
 
 void VulkanRenderDevice::InitializeState()
 {
+	Printf("VulkanRenderDevice: InitializeState begin\n");
+
 	static bool first = true;
 	if (first)
 	{
@@ -196,12 +224,14 @@ void VulkanRenderDevice::InitializeState()
 	maxuniformblock = device->PhysicalDevice.Properties.Properties.limits.maxUniformBufferRange;
 
 	mCommands.reset(new VkCommandBufferManager(this));
+	Printf("VulkanRenderDevice: command buffer manager ready\n");
 
 	mSamplerManager.reset(new VkSamplerManager(this));
 	mTextureManager.reset(new VkTextureManager(this));
 	mFramebufferManager.reset(new VkFramebufferManager(this));
 	mBufferManager.reset(new VkBufferManager(this));
 	mBufferManager->Init();
+	Printf("VulkanRenderDevice: resource managers ready\n");
 
 	mScreenBuffers.reset(new VkRenderBuffers(this));
 	mSaveBuffers.reset(new VkRenderBuffers(this));
@@ -217,14 +247,17 @@ void VulkanRenderDevice::InitializeState()
 	mViewpoints = new HWViewpointBuffer;
 	mLights = new FLightBuffer();
 	mBones = new BoneBuffer();
+	Printf("VulkanRenderDevice: geometry buffers ready\n");
 
 	mShaderManager.reset(new VkShaderManager(this));
 	mDescriptorSetManager->Init();
+	Printf("VulkanRenderDevice: shader and descriptor managers ready\n");
 #ifdef __APPLE__
 	mRenderState.reset(new VkRenderStateMolten(this));
 #else
 	mRenderState.reset(new VkRenderState(this));
 #endif
+	Printf("VulkanRenderDevice: InitializeState complete\n");
 }
 
 void VulkanRenderDevice::Update()
@@ -572,14 +605,40 @@ TArray<uint8_t> VulkanRenderDevice::GetScreenshotBuffer(int &pitch, ESSType &col
 void VulkanRenderDevice::BeginFrame()
 {
 	const auto vrmode = VRMode::GetVRModeCached(true);
+	static int beginFrameEntryLogs = 0;
+	if (beginFrameEntryLogs < 8)
+	{
+		Printf("VulkanRenderDevice::BeginFrame entry #%d vrmode=%p isVR=%d vr_mode=%d frameTime=%" PRIu64 "\n",
+			beginFrameEntryLogs + 1,
+			vrmode,
+			vrmode != nullptr && vrmode->IsVR() ? 1 : 0,
+			(int)vr_mode,
+			(uint64_t)screen->FrameTime);
+		beginFrameEntryLogs++;
+	}
+	static bool loggedFirstVRBeginFrame = false;
 	mXRFrameBeganThisFrame = false;
 	mCurrentEyeIndex = 0;
 	mEyeFinalPipelineImage[0] = 0;
 	mEyeFinalPipelineImage[1] = 2;
 	if (vrmode != nullptr && vrmode->IsVR())
 	{
+		if (!loggedFirstVRBeginFrame)
+		{
+			Printf("VulkanRenderDevice: first VR BeginFrame entering SetUp/BeginXRFrame\n");
+			loggedFirstVRBeginFrame = true;
+		}
 		vrmode->SetUp();
 		mXRFrameBeganThisFrame = vrmode->BeginXRFrame();
+		if (!mXRFrameBeganThisFrame)
+		{
+			static int xrBeginSkippedLogs = 0;
+			if (xrBeginSkippedLogs < 8)
+			{
+				Printf("VulkanRenderDevice: BeginXRFrame returned false (skip #%d)\n", xrBeginSkippedLogs + 1);
+				xrBeginSkippedLogs++;
+			}
+		}
 	}
 
 	SetViewportRects(nullptr);

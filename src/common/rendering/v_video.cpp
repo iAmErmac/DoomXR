@@ -333,7 +333,17 @@ bool IVideo::SetResolution ()
 	}
 
 	screen = buff;
+	Printf("IVideo::SetResolution: assigned screen=%p isVulkan=%d backend=%d size=%dx%d\n",
+		screen,
+		screen->IsVulkan() ? 1 : 0,
+		screen->Backend(),
+		screen->GetWidth(),
+		screen->GetHeight());
 	screen->InitializeState();
+	Printf("IVideo::SetResolution: InitializeState complete screen=%p isVulkan=%d backend=%d\n",
+		screen,
+		screen->IsVulkan() ? 1 : 0,
+		screen->Backend());
 	screen->NewRefreshRate();
 
 	V_UpdateModeSize(screen->GetWidth(), screen->GetHeight());

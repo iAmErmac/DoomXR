@@ -28,6 +28,7 @@
 #ifdef USE_OPENXR
 
 #include "gl_openxrdevice.h"
+#include <QzDoom/VrCommon.h>
 
 #include <string>
 #include <map>
@@ -101,8 +102,6 @@ EXTERN_CVAR(Bool,  vr_automap_fixed_pitch);
 EXTERN_CVAR(Bool,  vr_automap_fixed_roll);
 
 
-#include <QzDoom/VrCommon.h>
-
 extern vec3_t hmdPosition;
 extern vec3_t hmdorientation;
 extern vec3_t weaponoffset;
@@ -173,16 +172,16 @@ float getViewpointYaw()
     return doomYaw;
 }
 
-static float DEG2RAD(float deg)
+static float OpenXR_DegreesToRadians(float deg)
 {
     return deg * float(M_PI / 180.0);
 }
 
-static void AngleVectors(const vec3_t angles, vec3_t forward, vec3_t right, vec3_t up)
+static void OpenXR_AngleVectors(const vec3_t angles, vec3_t forward, vec3_t right, vec3_t up)
 {
-    const float pitch = DEG2RAD(angles[PITCH]);
-    const float yaw = DEG2RAD(angles[YAW]);
-    const float roll = DEG2RAD(angles[ROLL]);
+    const float pitch = OpenXR_DegreesToRadians(angles[PITCH]);
+    const float yaw = OpenXR_DegreesToRadians(angles[YAW]);
+    const float roll = OpenXR_DegreesToRadians(angles[ROLL]);
 
     const float sp = sinf(pitch);
     const float cp = cosf(pitch);
@@ -240,7 +239,7 @@ namespace s3d
         VectorSet(angles, vp.HWAngles.Pitch.Degrees(), getViewpointYaw(), vp.HWAngles.Roll.Degrees());
 
         vec3_t v_forward, v_right, v_up;
-        AngleVectors(angles, v_forward, v_right, v_up);
+        OpenXR_AngleVectors(angles, v_forward, v_right, v_up);
 
         float stereo_separation = (vr_ipd * 0.5) * vr_vunits_per_meter * (eye == 0 ? -1.0 : 1.0);
         vec3_t tmp;

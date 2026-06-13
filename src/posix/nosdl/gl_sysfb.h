@@ -7,9 +7,28 @@
 
 void QzDoom_GetScreenRes(uint32_t *width, uint32_t *height);
 
-class SystemGLFrameBuffer : public DFrameBuffer
+class SystemBaseFrameBuffer : public DFrameBuffer
 {
 	typedef DFrameBuffer Super;
+
+public:
+	SystemBaseFrameBuffer(void *hMonitor, bool fullscreen);
+
+	bool IsFullscreen() override;
+
+	int GetClientWidth() override;
+	int GetClientHeight() override;
+
+	void ToggleFullscreen(bool yes) override;
+	void SetWindowSize(int client_w, int client_h) override;
+
+protected:
+	SystemBaseFrameBuffer() {}
+};
+
+class SystemGLFrameBuffer : public SystemBaseFrameBuffer
+{
+	typedef SystemBaseFrameBuffer Super;
 
 public:
 	// this must have the same parameters as the Windows version, even if they are not used!
