@@ -101,6 +101,7 @@ protected:
 	void DestroyVirtualScreenSwapchain() const;
 	void DestroyVirtualScreenBackdropSwapchain() const;
 	void DestroyMenuPointerBeamSwapchain() const;
+	void InvalidateVirtualScreenCompositionResources() const;
 	void DestroyOpenXR() const;
 
 	void updateVirtualScreenLayer() const;
@@ -130,6 +131,7 @@ protected:
 	mutable bool xrUsingStageSpace = false;
 	mutable bool xrHasLocalHeightAnchor = false;
 	mutable float xrLocalHeightAnchor = 0.0f;
+	mutable bool xrVirtualScreenCompositionStale = false;
 	mutable XrSwapchain xrSwapchain = XR_NULL_HANDLE;
 	mutable std::shared_ptr<VulkanInstance> xrVkInstance;
 	mutable std::shared_ptr<VulkanDevice> xrVkDevice;

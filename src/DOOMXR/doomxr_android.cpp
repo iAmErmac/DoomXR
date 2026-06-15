@@ -16,6 +16,7 @@
 #include <zvulkan/volk/volk.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -53,6 +54,7 @@ namespace
 	jmethodID gHapticDisableMethod = nullptr;
 	std::mutex gAndroidBridgeMutex;
 	DOOMXRAppState* gActiveAppState = nullptr;
+	std::atomic<bool> gOpenMenuRequested{ false };
 
 	JNIEnv* GetEnv(bool& didAttachThread)
 	{
@@ -321,6 +323,16 @@ void DOOMXR_Restart()
 	CallStringVoidMethod(gReloadMethod, profile);
 }
 
+bool DOOMXR_ConsumeOpenMenuRequest()
+{
+	return gOpenMenuRequested.exchange(false);
+}
+
+void DOOMXR_RequestOpenMenu()
+{
+	gOpenMenuRequested.store(true);
+}
+
 bool DOOMXR_GetVulkanDrawableSize(int* width, int* height)
 {
 	uint32_t screenWidth = 0;
@@ -455,7 +467,7 @@ extern "C"
 
 	JNIEXPORT void JNICALL Java_com_ermac_doomxr_GLES3JNILib_requestMenuOpen(JNIEnv*, jobject, jlong)
 	{
-		// Wrapper-side menu requests are handled in the wrapper project.
+		DOOMXR_RequestOpenMenu();
 	}
 
 	JNIEXPORT void JNICALL Java_com_ermac_doomxr_GLES3JNILib_onDestroy(JNIEnv*, jobject, jlong handle)

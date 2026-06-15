@@ -72,6 +72,10 @@ void VR_SetHMDOrientation(float pitch, float yaw, float roll);
 void VR_SetHMDPosition(float x, float y, float z);
 double P_XYMovement(AActor* mo, DVector2 scroll);
 void QzDoom_setUseScreenLayer(bool use);
+#ifdef __ANDROID__
+bool DOOMXR_ConsumeOpenMenuRequest();
+void DOOMXR_RequestOpenMenu();
+#endif
 
 EXTERN_CVAR(Float, vr_ipd);
 EXTERN_CVAR(Float, vr_vunits_per_meter);
@@ -2394,6 +2398,10 @@ bool VKOpenXRDeviceMode::CreateVirtualScreenSwapchain(uint32_t width, uint32_t h
 {
 	if (xrSession == XR_NULL_HANDLE || xrVkDevice == nullptr || xrVirtualScreenSwapchainFormat == VK_FORMAT_UNDEFINED || width == 0 || height == 0)
 		return false;
+	if (xrVirtualScreenCompositionStale)
+	{
+		DestroyVirtualScreenSwapchain();
+	}
 	if (xrVirtualScreenSwapchain != XR_NULL_HANDLE &&
 		xrVirtualScreenWidth == width &&
 		xrVirtualScreenHeight == height &&
@@ -2471,6 +2479,10 @@ bool VKOpenXRDeviceMode::CreateVirtualScreenBackdropSwapchain(uint32_t width, ui
 {
 	if (xrSession == XR_NULL_HANDLE || xrVkDevice == nullptr || xrVirtualScreenSwapchainFormat == VK_FORMAT_UNDEFINED || width == 0 || height == 0)
 		return false;
+	if (xrVirtualScreenCompositionStale)
+	{
+		DestroyVirtualScreenBackdropSwapchain();
+	}
 	if (xrVirtualScreenBackdropSwapchain != XR_NULL_HANDLE &&
 		xrVirtualScreenBackdropWidth == width &&
 		xrVirtualScreenBackdropHeight == height &&
@@ -2549,6 +2561,10 @@ bool VKOpenXRDeviceMode::CreateMenuPointerBeamSwapchain() const
 	constexpr uint32_t beamH = 8;
 	if (xrSession == XR_NULL_HANDLE || xrVkDevice == nullptr || xrSwapchainFormat == VK_FORMAT_UNDEFINED)
 		return false;
+	if (xrVirtualScreenCompositionStale)
+	{
+		DestroyMenuPointerBeamSwapchain();
+	}
 	if (xrMenuPointerBeamSwapchain != XR_NULL_HANDLE && !xrMenuPointerBeamTextures.empty())
 		return true;
 
@@ -2648,12 +2664,25 @@ void VKOpenXRDeviceMode::DestroyMenuPointerBeamSwapchain() const
 	}
 }
 
+void VKOpenXRDeviceMode::InvalidateVirtualScreenCompositionResources() const
+{
+	xrVirtualScreenWasVisibleLastFrame = false;
+	xrMenuPointerBeamVisible = false;
+	xrVirtualScreenVisible = false;
+	xrVirtualScreenBackdropVisible = false;
+	xrVirtualScreenImageIndex = -1;
+	xrVirtualScreenBackdropImageIndex = -1;
+	xrMenuPointerBeamImageIndex = -1;
+	xrVirtualScreenCompositionStale = true;
+}
+
 void VKOpenXRDeviceMode::DestroyOpenXR() const
 {
 	StopHaptics();
-	DestroyVirtualScreenSwapchain();
-	DestroyVirtualScreenBackdropSwapchain();
+	InvalidateVirtualScreenCompositionResources();
 	DestroyMenuPointerBeamSwapchain();
+	DestroyVirtualScreenBackdropSwapchain();
+	DestroyVirtualScreenSwapchain();
 	if (xrSwapchain != XR_NULL_HANDLE)
 	{
 		xrDestroySwapchain(xrSwapchain);
@@ -2905,7 +2934,14 @@ void VKOpenXRDeviceMode::PollXREvents() const
 		if (ev->session != xrSession)
 			continue;
 
+		const XrSessionState previousState = xrSessionState;
 		xrSessionState = ev->state;
+#ifdef __ANDROID__
+		if (previousState == XR_SESSION_STATE_FOCUSED && ev->state == XR_SESSION_STATE_VISIBLE)
+		{
+			DOOMXR_RequestOpenMenu();
+		}
+#endif
 		if (ev->state == XR_SESSION_STATE_READY)
 		{
 			isSessionReadyToBegin = true;
@@ -2913,6 +2949,7 @@ void VKOpenXRDeviceMode::PollXREvents() const
 		else if (ev->state == XR_SESSION_STATE_STOPPING)
 		{
 			StopHaptics();
+			InvalidateVirtualScreenCompositionResources();
 			xrEndSession(xrSession);
 			isSessionRunning = false;
 			isSessionReadyToBegin = false;
@@ -3021,6 +3058,13 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 
 	if (xrFrameState.predictedDisplayTime == 0)
 		return;
+
+#ifdef __ANDROID__
+	if (DOOMXR_ConsumeOpenMenuRequest())
+	{
+		RequestMainMenuOpen();
+	}
+#endif
 
 	XrActiveActionSet activeActionSet{};
 	activeActionSet.actionSet = xrActionSet;
@@ -3975,29 +4019,22 @@ bool VKOpenXRDeviceMode::BeginXRFrame() const
 
 	if (xrSession == XR_NULL_HANDLE || xrVkDevice == nullptr)
 	{
-		static int missingSessionLogs = 0;
-		if (missingSessionLogs < 4)
-		{
+		if (developer > 0)
 			Printf("OpenXR: BeginXRFrame aborted, session=%p vkDevice=%p\n", xrSession, xrVkDevice.get());
-			missingSessionLogs++;
-		}
 		return false;
 	}
 
 	if (xrSwapchain == XR_NULL_HANDLE && !CreateSwapchain())
 	{
-		Printf("OpenXR: BeginXRFrame failed to create swapchain\n");
+		if (developer > 0)
+			Printf("OpenXR: BeginXRFrame failed to create swapchain\n");
 		return false;
 	}
 
 	if (gamestate == GS_LEVEL && (r_viewpoint.camera == nullptr || r_viewpoint.ViewLevel == nullptr))
 	{
-		static int missingViewLogs = 0;
-		if (missingViewLogs < 4)
-		{
+		if (developer > 0)
 			Printf("OpenXR: BeginXRFrame waiting for gameplay camera/viewlevel\n");
-			missingViewLogs++;
-		}
 		return false;
 	}
 
@@ -4009,7 +4046,8 @@ bool VKOpenXRDeviceMode::BeginXRFrame() const
 		if (XR_SUCCEEDED(r))
 		{
 			isSessionRunning = true;
-			Printf("OpenXR: xrBeginSession succeeded at frame %" PRIu64 "\n", nextFrame);
+			if (developer > 0)
+				Printf("OpenXR: xrBeginSession succeeded at frame %" PRIu64 "\n", nextFrame);
 			ApplyRefreshRate();
 		}
 		else
@@ -4022,24 +4060,16 @@ bool VKOpenXRDeviceMode::BeginXRFrame() const
 
 	if (!isSessionRunning)
 	{
-		static int sessionNotRunningLogs = 0;
-		if (sessionNotRunningLogs < 8)
-		{
+		if (developer > 0)
 			Printf("OpenXR: BeginXRFrame waiting, session state=%d ready=%d running=%d frame=%" PRIu64 "\n",
 				(int)xrSessionState, isSessionReadyToBegin ? 1 : 0, isSessionRunning ? 1 : 0, nextFrame);
-			sessionNotRunningLogs++;
-		}
 		return false;
 	}
 
 	if (xrFrameInProgress)
 	{
-		static int frameInProgressLogs = 0;
-		if (frameInProgressLogs < 4)
-		{
+		if (developer > 0)
 			Printf("OpenXR: BeginXRFrame called while frame already in progress\n");
-			frameInProgressLogs++;
-		}
 		return false;
 	}
 
@@ -4067,14 +4097,16 @@ bool VKOpenXRDeviceMode::BeginXRFrame() const
 	uint32_t viewCount = xrViewCount;
 	if (viewCount == 0 || xrViews.size() < viewCount || xrProjectionViews.size() < viewCount)
 	{
-		Printf("OpenXR: BeginXRFrame invalid view buffers viewCount=%u views=%u projections=%u\n",
-			viewCount, (unsigned)xrViews.size(), (unsigned)xrProjectionViews.size());
+		if (developer > 0)
+			Printf("OpenXR: BeginXRFrame invalid view buffers viewCount=%u views=%u projections=%u\n",
+				viewCount, (unsigned)xrViews.size(), (unsigned)xrProjectionViews.size());
 		return false;
 	}
 	xrResult = xrLocateViews(xrSession, &locateInfo, &viewState, viewCount, &viewCount, xrViews.data());
 	if (XR_FAILED(xrResult))
 	{
-		Printf("OpenXR: xrLocateViews failed result=%d\n", (int)xrResult);
+		if (developer > 0)
+			Printf("OpenXR: xrLocateViews failed result=%d\n", (int)xrResult);
 		XrFrameEndInfo endInfo{ XR_TYPE_FRAME_END_INFO };
 		endInfo.displayTime = xrFrameState.predictedDisplayTime;
 		endInfo.environmentBlendMode = environmentBlendMode;
@@ -4090,12 +4122,10 @@ bool VKOpenXRDeviceMode::BeginXRFrame() const
 	if ((viewState.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) == 0 || (viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) == 0)
 	{
 	}
-	static int firstSuccessfulFrameLogs = 0;
-	if (firstSuccessfulFrameLogs < 3)
+	if (developer > 0)
 	{
 		Printf("OpenXR: BeginXRFrame succeeded shouldRender=%d state=%d frame=%" PRIu64 "\n",
 			xrFrameState.shouldRender ? 1 : 0, (int)xrSessionState, nextFrame);
-		firstSuccessfulFrameLogs++;
 	}
 
 	updateHmdPose(r_viewpoint);
@@ -4765,8 +4795,7 @@ bool VKOpenXRDeviceMode::RenderVirtualScreen() const
 	if (XR_FAILED(xrResult))
 	{
 		Printf("OpenXR: virtual screen acquire failed (%d).\n", (int)xrResult);
-		xrVirtualScreenVisible = false;
-		xrVirtualScreenWasVisibleLastFrame = false;
+		InvalidateVirtualScreenCompositionResources();
 		return false;
 	}
 
@@ -4778,8 +4807,7 @@ bool VKOpenXRDeviceMode::RenderVirtualScreen() const
 		XrSwapchainImageReleaseInfo releaseInfo{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
 		xrReleaseSwapchainImage(xrVirtualScreenSwapchain, &releaseInfo);
 		Printf("OpenXR: virtual screen wait failed (%d).\n", (int)xrResult);
-		xrVirtualScreenVisible = false;
-		xrVirtualScreenWasVisibleLastFrame = false;
+		InvalidateVirtualScreenCompositionResources();
 		return false;
 	}
 
@@ -4969,8 +4997,7 @@ bool VKOpenXRDeviceMode::RenderVirtualScreen() const
 	if (XR_FAILED(xrResult))
 	{
 		Printf("OpenXR: virtual screen backdrop acquire failed (%d).\n", (int)xrResult);
-		xrVirtualScreenVisible = false;
-		xrVirtualScreenBackdropVisible = false;
+		InvalidateVirtualScreenCompositionResources();
 		return false;
 	}
 
@@ -4982,8 +5009,7 @@ bool VKOpenXRDeviceMode::RenderVirtualScreen() const
 		XrSwapchainImageReleaseInfo releaseInfo{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
 		xrReleaseSwapchainImage(xrVirtualScreenBackdropSwapchain, &releaseInfo);
 		Printf("OpenXR: virtual screen backdrop wait failed (%d).\n", (int)xrResult);
-		xrVirtualScreenVisible = false;
-		xrVirtualScreenBackdropVisible = false;
+		InvalidateVirtualScreenCompositionResources();
 		return false;
 	}
 
@@ -5074,8 +5100,7 @@ bool VKOpenXRDeviceMode::RenderVirtualScreen() const
 	if (XR_FAILED(xrResult))
 	{
 		Printf("OpenXR: virtual screen backdrop release failed (%d).\n", (int)xrResult);
-		xrVirtualScreenVisible = false;
-		xrVirtualScreenBackdropVisible = false;
+		InvalidateVirtualScreenCompositionResources();
 		return false;
 	}
 
@@ -5084,14 +5109,14 @@ bool VKOpenXRDeviceMode::RenderVirtualScreen() const
 	if (XR_FAILED(xrResult))
 	{
 		Printf("OpenXR: virtual screen release failed (%d).\n", (int)xrResult);
-		xrVirtualScreenVisible = false;
-		xrVirtualScreenBackdropVisible = false;
+		InvalidateVirtualScreenCompositionResources();
 		return false;
 	}
 
 	updateVirtualScreenLayer();
 	xrVirtualScreenVisible = true;
 	xrVirtualScreenBackdropVisible = true;
+	xrVirtualScreenCompositionStale = false;
 	return true;
 }
 
