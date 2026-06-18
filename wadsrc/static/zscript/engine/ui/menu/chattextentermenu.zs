@@ -1,13 +1,9 @@
 /*
-** consoletextentermenu.zs
-** Console command input overlay with the character grid
-**
-** This is a console-specific version of TextEnterMenu that stays open
-** while the console is visible so VR/mobile users can keep entering
-** commands without leaving the console.
+** chattextentermenu.zs
+** Modal chat input overlay used for on-screen keyboard entry.
 */
 
-class ConsoleTextEnterMenu : GenericMenu
+class ChatTextEnterMenu : GenericMenu
 {
 	const INPUTGRID_WIDTH = 13;
 	const INPUTGRID_HEIGHT = 5;
@@ -19,7 +15,9 @@ class ConsoleTextEnterMenu : GenericMenu
 	int mInputGridY;
 	Font displayFont;
 
-	private native static void DoCommand(String cmd, bool is_unsafe);
+	private native static void SubmitChatMessage(String text);
+	private native static void CancelChatMessage();
+	private native static bool IsTeamChat();
 
 	override void Init(Menu parent)
 	{
@@ -47,20 +45,14 @@ class ConsoleTextEnterMenu : GenericMenu
 
 	private void Submit()
 	{
-		if (mEnterString.Length() == 0)
-		{
-			return;
-		}
-
-		Menu.MenuSound("menu/choose");
-		DoCommand(mEnterString, false);
-		mEnterString = "";
-		Menu.SetVirtualTextInputActive(true);
+		SubmitChatMessage(mEnterString);
+		Close();
 	}
 
 	override void OnDestroy()
 	{
 		Menu.SetVirtualTextInputActive(false);
+		CancelChatMessage();
 		Super.OnDestroy();
 	}
 
@@ -85,7 +77,7 @@ class ConsoleTextEnterMenu : GenericMenu
 		{
 			if (ch == UIEvent.Key_ESCAPE)
 			{
-				mEnterString = "";
+				Close();
 				return true;
 			}
 			else if (ch == 13)
@@ -207,7 +199,7 @@ class ConsoleTextEnterMenu : GenericMenu
 			return true;
 
 		case MKEY_Abort:
-			mEnterString = "";
+			Close();
 			return true;
 		}
 
@@ -216,16 +208,11 @@ class ConsoleTextEnterMenu : GenericMenu
 
 	override bool OnInputEvent(InputEvent ev)
 	{
-		if (ev.type == InputEvent.Type_KeyDown)
+		if (ev.type == InputEvent.Type_KeyDown &&
+			(ev.KeyScan == InputEvent.Key_Pad_B || ev.KeyScan == InputEvent.Key_Escape))
 		{
-			int toggleKey1, toggleKey2;
-			[toggleKey1, toggleKey2] = Bindings.GetKeysForCommand("toggleconsole");
-			if (ev.KeyScan == toggleKey1 || ev.KeyScan == toggleKey2 ||
-				ev.KeyScan == InputEvent.Key_Pad_B || ev.KeyScan == InputEvent.Key_Escape)
-			{
-				Console.HideConsole();
-				return true;
-			}
+			Close();
+			return true;
 		}
 		return Super.OnInputEvent(ev);
 	}
@@ -235,17 +222,16 @@ class ConsoleTextEnterMenu : GenericMenu
 		String InputGridChars = Chars;
 		int cell_width = 18 * CleanXfac_1;
 		int cell_height = 16 * CleanYfac_1;
-		int top_padding = cell_height / 2 - displayFont.GetHeight() * CleanYfac_1 / 2;
 		int promptX = 8 * CleanXfac_1;
 		int promptY = 8 * CleanYfac_1;
+		String prompt = IsTeamChat() ? "TEAM SAY: " : "SAY: ";
 
 		screen.DrawText(displayFont, Font.CR_ORANGE, promptX, promptY,
-			"> " .. mEnterString .. displayFont.GetCursor(),
+			prompt .. mEnterString .. displayFont.GetCursor(),
 			DTA_CleanNoMove_1, true);
 		screen.DrawText(displayFont, Font.CR_BROWN, promptX, promptY + displayFont.GetHeight() * CleanYfac_1 + 4,
-			"Enter runs the command, Backspace deletes.", DTA_CleanNoMove_1, true);
+			"Enter sends the message, Backspace deletes.", DTA_CleanNoMove_1, true);
 
-		// Darken the background behind the character grid.
 		screen.Dim(0, 0.8, 0, screen.GetHeight() - INPUTGRID_HEIGHT * cell_height, screen.GetWidth(), INPUTGRID_HEIGHT * cell_height);
 
 		if (mInputGridX >= 0 && mInputGridY >= 0)
@@ -258,39 +244,14 @@ class ConsoleTextEnterMenu : GenericMenu
 
 		for (int y = 0; y < INPUTGRID_HEIGHT; ++y)
 		{
-			int yy = y * cell_height - INPUTGRID_HEIGHT * cell_height + screen.GetHeight();
 			for (int x = 0; x < INPUTGRID_WIDTH; ++x)
 			{
-				int xx = x * cell_width - INPUTGRID_WIDTH * cell_width / 2 + screen.GetWidth() / 2;
-				int ch = InputGridChars.ByteAt(y * INPUTGRID_WIDTH + x);
-				int width = displayFont.GetCharWidth(ch);
-				int colr = (x == mInputGridX && y == mInputGridY) ? Font.CR_YELLOW : Font.CR_DARKGRAY;
-				Color palcolor = (x == mInputGridX && y == mInputGridY) ? Color(160, 120, 0) : Color(120, 120, 120);
-
-				if (ch > 32)
-				{
-					screen.DrawChar(displayFont, colr, xx + cell_width / 2 - width * CleanXfac_1 / 2, yy + top_padding, ch, DTA_CleanNoMove_1, true);
-				}
-				else if (ch == 32)
-				{
-					int x1 = xx + cell_width / 2 - width * CleanXfac_1 * 3 / 4;
-					int x2 = x1 + width * 3 * CleanXfac_1 / 2;
-					int y1 = yy + top_padding;
-					int y2 = y1 + displayFont.GetHeight() * CleanYfac_1;
-					screen.Clear(x1, y1, x2, y1 + CleanYfac_1, palcolor);
-					screen.Clear(x1, y2, x2, y2 + CleanYfac_1, palcolor);
-					screen.Clear(x1, y1 + CleanYfac_1, x1 + CleanXfac_1, y2, palcolor);
-					screen.Clear(x2 - CleanXfac_1, y1 + CleanYfac_1, x2, y2, palcolor);
-				}
-				else if (ch == 8 || ch == 0)
-				{
-					String str = ch == 8 ? "<-" : "END";
-					screen.DrawText(displayFont, colr,
-						xx + cell_width / 2 - displayFont.StringWidth(str) * CleanXfac_1 / 2,
-						yy + top_padding, str, DTA_CleanNoMove_1, true);
-				}
+				int px = x * cell_width - INPUTGRID_WIDTH * cell_width / 2 + screen.GetWidth() / 2;
+				int py = y * cell_height - INPUTGRID_HEIGHT * cell_height + screen.GetHeight();
+				int ch = InputGridChars.ByteAt(x + y * INPUTGRID_WIDTH);
+				String cellText = ch == 8 ? "<" : ch == 0 ? "OK" : String.Format("%c", ch);
+				screen.DrawText(displayFont, Font.CR_GREY, px + 3, py + 1, cellText, DTA_CleanNoMove_1, true);
 			}
 		}
-		Super.Drawer();
 	}
 }

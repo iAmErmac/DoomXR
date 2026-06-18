@@ -1197,6 +1197,29 @@ DEFINE_ACTION_FUNCTION(DConsoleTextEnterMenu, DoCommand)
 	return 0;
 }
 
+void CT_SubmitTextEntryMenuMessage(const char* text);
+void CT_CancelTextEntryMenu();
+bool CT_IsTextEntryMenuTeamChat();
+
+DEFINE_ACTION_FUNCTION(DChatTextEnterMenu, SubmitChatMessage)
+{
+	PARAM_PROLOGUE;
+	PARAM_STRING(text);
+	CT_SubmitTextEntryMenuMessage(text.GetChars());
+	return 0;
+}
+
+DEFINE_ACTION_FUNCTION(DChatTextEnterMenu, CancelChatMessage)
+{
+	CT_CancelTextEntryMenu();
+	return 0;
+}
+
+DEFINE_ACTION_FUNCTION(DChatTextEnterMenu, IsTeamChat)
+{
+	ACTION_RETURN_BOOL(CT_IsTextEntryMenuTeamChat());
+}
+
 DEFINE_ACTION_FUNCTION(DCheatMenu, DoCommand)
 {
 	PARAM_PROLOGUE;

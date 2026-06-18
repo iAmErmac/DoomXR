@@ -24,11 +24,15 @@
 #include <thread>
 #include <vector>
 
+#include "common/engine/d_eventbase.h"
+#include "common/utility/utf8.h"
+
 void VR_DoomMain(int argc, char** argv);
 const char* M_GetActiveProfile();
 FArgs* Args = nullptr;
 extern bool AppActive;
 void S_SetSoundPaused(int state);
+EXTERN_CVAR(Bool, vr_meta_keyboard);
 
 namespace
 {
@@ -52,9 +56,13 @@ namespace
 	jmethodID gHapticStopEventMethod = nullptr;
 	jmethodID gHapticEnableMethod = nullptr;
 	jmethodID gHapticDisableMethod = nullptr;
+	jmethodID gShowTextInputMethod = nullptr;
+	jmethodID gHideTextInputMethod = nullptr;
 	std::mutex gAndroidBridgeMutex;
 	DOOMXRAppState* gActiveAppState = nullptr;
 	std::atomic<bool> gOpenMenuRequested{ false };
+	std::atomic<bool> gMetaKeyboardEnabled{ false };
+	std::atomic<bool> gTextInputActive{ false };
 
 	JNIEnv* GetEnv(bool& didAttachThread)
 	{
@@ -95,6 +103,8 @@ namespace
 		gHapticStopEventMethod = nullptr;
 		gHapticEnableMethod = nullptr;
 		gHapticDisableMethod = nullptr;
+		gShowTextInputMethod = nullptr;
+		gHideTextInputMethod = nullptr;
 	}
 
 	void CallVoidMethod(jmethodID method)
@@ -120,6 +130,36 @@ namespace
 		env->CallVoidMethod(gCallbackObject, method, stringValue);
 		env->DeleteLocalRef(stringValue);
 		ReleaseEnv(didAttachThread);
+	}
+
+	bool IsMetaKeyboardPopupEnabled()
+	{
+		return gMetaKeyboardEnabled.load() && !!vr_meta_keyboard;
+	}
+
+	void PostGuiText(const char* text)
+	{
+		if (text == nullptr || *text == '\0')
+			return;
+
+		const uint8_t* cursor = reinterpret_cast<const uint8_t*>(text);
+		while (auto chr = GetCharFromString(cursor))
+		{
+			event_t ev{};
+			ev.type = EV_GUI_Event;
+			ev.subtype = EV_GUI_Char;
+			ev.data1 = chr;
+			D_PostEvent(&ev);
+		}
+	}
+
+	void PostGuiKey(int key)
+	{
+		event_t ev{};
+		ev.type = EV_GUI_Event;
+		ev.subtype = EV_GUI_KeyDown;
+		ev.data1 = key;
+		D_PostEvent(&ev);
 	}
 
 	void CallHapticEventMethod(const char* event, int position, int intensity, float angle, float yHeight)
@@ -333,6 +373,67 @@ void DOOMXR_RequestOpenMenu()
 	gOpenMenuRequested.store(true);
 }
 
+void DOOMXR_ShowTextInput()
+{
+	if (!IsMetaKeyboardPopupEnabled())
+	{
+		return;
+	}
+
+	bool didAttachThread = false;
+	JNIEnv* env = GetEnv(didAttachThread);
+	if (env != nullptr && gCallbackObject != nullptr && gShowTextInputMethod != nullptr)
+	{
+		env->CallVoidMethod(gCallbackObject, gShowTextInputMethod);
+	}
+	ReleaseEnv(didAttachThread);
+}
+
+void DOOMXR_HideTextInput()
+{
+	bool didAttachThread = false;
+	JNIEnv* env = GetEnv(didAttachThread);
+	if (env != nullptr && gCallbackObject != nullptr && gHideTextInputMethod != nullptr)
+	{
+		env->CallVoidMethod(gCallbackObject, gHideTextInputMethod);
+	}
+	ReleaseEnv(didAttachThread);
+}
+
+void DOOMXR_SetMetaKeyboardEnabled(bool enabled)
+{
+	gMetaKeyboardEnabled.store(enabled);
+	if (!enabled)
+	{
+		gTextInputActive.store(false);
+		DOOMXR_HideTextInput();
+	}
+}
+
+bool DOOMXR_IsMetaKeyboardEnabled()
+{
+	return gMetaKeyboardEnabled.load();
+}
+
+void DOOMXR_SetTextInputActive(bool active)
+{
+	const bool popupActive = active && IsMetaKeyboardPopupEnabled();
+	const bool wasActive = gTextInputActive.exchange(popupActive);
+	if (popupActive)
+	{
+		DOOMXR_ShowTextInput();
+	}
+	else if (!popupActive && wasActive)
+	{
+		DOOMXR_HideTextInput();
+	}
+}
+
+bool DOOMXR_IsTextInputActive()
+{
+	return IsMetaKeyboardPopupEnabled() && gTextInputActive.load();
+}
+
 bool DOOMXR_GetVulkanDrawableSize(int* width, int* height)
 {
 	uint32_t screenWidth = 0;
@@ -446,6 +547,8 @@ extern "C"
 		gHapticStopEventMethod = env->GetMethodID(callbackClass, "haptic_stopevent", "(Ljava/lang/String;)V");
 		gHapticEnableMethod = env->GetMethodID(callbackClass, "haptic_enable", "()V");
 		gHapticDisableMethod = env->GetMethodID(callbackClass, "haptic_disable", "()V");
+		gShowTextInputMethod = env->GetMethodID(callbackClass, "showTextInput", "()V");
+		gHideTextInputMethod = env->GetMethodID(callbackClass, "hideTextInput", "()V");
 		env->DeleteLocalRef(callbackClass);
 	}
 
@@ -468,6 +571,29 @@ extern "C"
 	JNIEXPORT void JNICALL Java_com_ermac_doomxr_GLES3JNILib_requestMenuOpen(JNIEnv*, jobject, jlong)
 	{
 		DOOMXR_RequestOpenMenu();
+	}
+
+	JNIEXPORT void JNICALL Java_com_ermac_doomxr_GLES3JNILib_setMetaKeyboardEnabled(JNIEnv*, jclass, jboolean enabled)
+	{
+		DOOMXR_SetMetaKeyboardEnabled(enabled != 0);
+	}
+
+	JNIEXPORT void JNICALL Java_com_ermac_doomxr_GLES3JNILib_onTextInput(JNIEnv* env, jobject, jlong, jstring text)
+	{
+		if (env == nullptr || text == nullptr)
+			return;
+
+		const char* utfText = env->GetStringUTFChars(text, nullptr);
+		if (utfText == nullptr)
+			return;
+
+		PostGuiText(utfText);
+		env->ReleaseStringUTFChars(text, utfText);
+	}
+
+	JNIEXPORT void JNICALL Java_com_ermac_doomxr_GLES3JNILib_onTextKey(JNIEnv*, jobject, jlong, jint key)
+	{
+		PostGuiKey(static_cast<int>(key));
 	}
 
 	JNIEXPORT void JNICALL Java_com_ermac_doomxr_GLES3JNILib_onDestroy(JNIEnv*, jobject, jlong handle)

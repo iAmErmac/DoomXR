@@ -55,6 +55,10 @@
 #include "i_time.h"
 #include "printf.h"
 
+#ifdef __ANDROID__
+void DOOMXR_SetTextInputActive(bool active);
+#endif
+
 int DMenu::InMenu;
 static ScaleOverrider *CurrentScaleOverrider;
 static bool PendingMenuRebuild = false;
@@ -347,6 +351,16 @@ DEFINE_ACTION_FUNCTION_NATIVE(DMenu, SetMouseCapture, SetMouseCapture)
 	PARAM_PROLOGUE;
 	PARAM_BOOL(on);
 	SetMouseCapture(on);
+	return 0;
+}
+
+DEFINE_ACTION_FUNCTION(DMenu, SetVirtualTextInputActive)
+{
+#ifdef __ANDROID__
+	PARAM_PROLOGUE;
+	PARAM_BOOL(active);
+	DOOMXR_SetTextInputActive(active);
+#endif
 	return 0;
 }
 

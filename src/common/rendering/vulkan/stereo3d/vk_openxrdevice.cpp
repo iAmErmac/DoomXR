@@ -16,6 +16,7 @@
 #include "zvulkan/vulkanswapchain.h"
 #include "QzDoom/DOOMXR_Android.h"
 #include "QzDoom/VrCommon.h"
+#include "common/rendering/stereo3d/openxr/oxr_keyboard.h"
 #include "d_player.h"
 #include "g_game.h"
 #include "g_levellocals.h"
@@ -67,6 +68,8 @@ extern bool ready_teleport;
 extern bool trigger_teleport;
 extern bool automapactive;
 extern bool cinemamode;
+extern int chatmodeon;
+void CT_Stop();
 bool VR_UseScreenLayer();
 void VR_SetHMDOrientation(float pitch, float yaw, float roll);
 void VR_SetHMDPosition(float x, float y, float z);
@@ -75,6 +78,7 @@ void QzDoom_setUseScreenLayer(bool use);
 #ifdef __ANDROID__
 bool DOOMXR_ConsumeOpenMenuRequest();
 void DOOMXR_RequestOpenMenu();
+bool DOOMXR_IsTextInputActive();
 #endif
 
 EXTERN_CVAR(Float, vr_ipd);
@@ -162,6 +166,10 @@ private:
 constexpr XrViewConfigurationType viewType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
 constexpr XrEnvironmentBlendMode environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
 XrSessionState xrSessionState = XR_SESSION_STATE_UNKNOWN;
+#ifdef __ANDROID__
+bool xrPendingMenuOpenAfterFocusLoss = false;
+uint64_t xrIgnoreFocusLossMenuOpenUntilMs = 0;
+#endif
 
 using PFN_xrGetVulkanGraphicsRequirementsKHR_t = XrResult (XRAPI_PTR *)(XrInstance, XrSystemId, XrGraphicsRequirementsVulkanKHR*);
 using PFN_xrGetVulkanGraphicsDeviceKHR_t = XrResult (XRAPI_PTR *)(XrInstance, XrSystemId, VkInstance, VkPhysicalDevice*);
@@ -209,7 +217,7 @@ static const std::vector<XrExtensionProperties>& GetOpenXRExtensions()
 
 static bool IsGameplaySceneActive()
 {
-	return gamestate == GS_LEVEL && menuactive == MENU_Off && !paused && ConsoleState == c_up;
+	return gamestate == GS_LEVEL && menuactive == MENU_Off && !paused && ConsoleState == c_up && chatmodeon == 0;
 }
 
 static bool HasOpenXRExtension(const char* extensionName)
@@ -597,7 +605,7 @@ static XrSafeSourceRect GetSafeXrSourceRect(VulkanRenderDevice* vkfb)
 	const int srcBufferW = buffers ? buffers->GetWidth() : 0;
 	const int srcBufferH = buffers ? buffers->GetHeight() : 0;
 	IntRect requestedRect = vkfb ? vkfb->mSceneViewport : IntRect{ 0, 0, 0, 0 };
-	const bool overlayUIActive = menuactive != MENU_Off || ConsoleState != c_up || cinemamode;
+	const bool overlayUIActive = menuactive != MENU_Off || ConsoleState != c_up || cinemamode || chatmodeon != 0;
 	const auto& mode = (const VKOpenXRDeviceMode&)VKOpenXRDeviceMode::getInstance();
 
 	if (mode.ShouldUseRecommendedRenderSizeThisFrame() && !overlayUIActive && srcBufferW > 0 && srcBufferH > 0)
@@ -861,6 +869,12 @@ static void RequestMainMenuOpen()
 		return;
 	}
 
+	if (chatmodeon != 0)
+	{
+		CT_Stop();
+	}
+
+	M_ResetButtonStates();
 	M_StartControlPanel(true);
 	M_SetMenu(NAME_Mainmenu, -1);
 }
@@ -2223,6 +2237,21 @@ bool VKOpenXRDeviceMode::InitializeOpenXR() const
 	}
 	InitializeMultiview();
 
+	// Initialize Meta Quest keyboard tracking if the runtime exposes it.
+	if (HasKeyboardTrackingExtension())
+	{
+		if (InitializeKeyboardTracking(xrInstance, xrSession))
+		{
+			if (developer > 0)
+				Printf("OpenXR: Meta Quest keyboard tracking initialized.\n");
+		}
+	}
+	else
+	{
+		if (developer > 0)
+			Printf("OpenXR: XR_FB_keyboard_tracking not available (not Meta Quest headset).\n");
+	}
+
 	isOpenXRReady = true;
 	xrInitProbeFrameTime = screen != nullptr ? screen->FrameTime : 0;
 	xrInitProbeResult = true;
@@ -2725,6 +2754,9 @@ void VKOpenXRDeviceMode::DestroyOpenXR() const
 	isSessionRunning = false;
 	isSessionReadyToBegin = false;
 	xrSessionState = XR_SESSION_STATE_UNKNOWN;
+#ifdef __ANDROID__
+	xrPendingMenuOpenAfterFocusLoss = false;
+#endif
 	xrFrameInProgress = false;
 	isSetup = false;
 	xrHasEquirectBackdrop = false;
@@ -2825,7 +2857,8 @@ void VKOpenXRDeviceMode::PurgeDeferredOpenXRResources() const
 
 VKOpenXRDeviceMode::FrameRenderMode VKOpenXRDeviceMode::DetermineFrameRenderMode() const
 {
-	const bool forceVirtualScreen = gamestate == GS_LEVEL && menuactive == MENU_Off && (cinemamode || vr_overlayscreen_always);
+	const bool forceVirtualScreen = gamestate == GS_LEVEL && menuactive == MENU_Off &&
+		(cinemamode || vr_overlayscreen_always || chatmodeon != 0);
 	return (IsGameplaySceneActive() && !forceVirtualScreen) ? FrameRenderMode::GameplayEyes : FrameRenderMode::VirtualScreen;
 }
 
@@ -2900,6 +2933,7 @@ void VKOpenXRDeviceMode::SetUp() const
 	}
 	else if (gamestate != GS_LEVEL || menuactive != MENU_Off
 		|| ConsoleState == c_down || ConsoleState == c_falling
+		|| chatmodeon != 0
 		|| (player && player->playerstate == PST_DEAD)
 		|| (player && player->resetDoomYaw)
 		|| paused)
@@ -2937,9 +2971,17 @@ void VKOpenXRDeviceMode::PollXREvents() const
 		const XrSessionState previousState = xrSessionState;
 		xrSessionState = ev->state;
 #ifdef __ANDROID__
-		if (previousState == XR_SESSION_STATE_FOCUSED && ev->state == XR_SESSION_STATE_VISIBLE)
+		const uint64_t nowMs = I_msTime();
+		const bool suppressKeyboardFocusLossMenuOpen = nowMs < xrIgnoreFocusLossMenuOpenUntilMs;
+		if (previousState == XR_SESSION_STATE_FOCUSED && ev->state != XR_SESSION_STATE_FOCUSED)
+		{
+			xrPendingMenuOpenAfterFocusLoss = !suppressKeyboardFocusLossMenuOpen;
+		}
+		if (xrPendingMenuOpenAfterFocusLoss &&
+			(ev->state == XR_SESSION_STATE_VISIBLE || ev->state == XR_SESSION_STATE_FOCUSED))
 		{
 			DOOMXR_RequestOpenMenu();
+			xrPendingMenuOpenAfterFocusLoss = false;
 		}
 #endif
 		if (ev->state == XR_SESSION_STATE_READY)
@@ -2960,6 +3002,9 @@ void VKOpenXRDeviceMode::PollXREvents() const
 		}
 		else if (ev->state == XR_SESSION_STATE_LOSS_PENDING || ev->state == XR_SESSION_STATE_EXITING)
 		{
+#ifdef __ANDROID__
+			xrPendingMenuOpenAfterFocusLoss = false;
+#endif
 			StopHaptics();
 			DestroyOpenXR();
 			return;
@@ -3053,11 +3098,6 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 {
 	if (xrSession == XR_NULL_HANDLE || xrSpace == XR_NULL_HANDLE || xrActionSet == XR_NULL_HANDLE)
 		return;
-	if (!isSessionRunning)
-		return;
-
-	if (xrFrameState.predictedDisplayTime == 0)
-		return;
 
 #ifdef __ANDROID__
 	if (DOOMXR_ConsumeOpenMenuRequest())
@@ -3065,6 +3105,31 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		RequestMainMenuOpen();
 	}
 #endif
+
+	if (!isSessionRunning)
+		return;
+
+	if (xrFrameState.predictedDisplayTime == 0)
+		return;
+
+	// Meta Quest keyboard integration: show/hide the system keyboard when text input is active.
+	bool needsKeyboardInput = chatmodeon != 0 || DOOMXR_IsTextInputActive();
+
+	// Only show keyboard on Meta Quest headsets (where XR_FB_keyboard_tracking is available)
+	if (IsKeyboardVisible() && !needsKeyboardInput)
+	{
+		HideKeyboard();
+	}
+	else if (!IsKeyboardVisible() && needsKeyboardInput)
+	{
+		if (ShowKeyboard())
+		{
+#ifdef __ANDROID__
+			xrIgnoreFocusLossMenuOpenUntilMs = I_msTime() + 1500;
+			xrPendingMenuOpenAfterFocusLoss = false;
+#endif
+		}
+	}
 
 	XrActiveActionSet activeActionSet{};
 	activeActionSet.actionSet = xrActionSet;
@@ -3079,8 +3144,9 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 	}
 
 	const bool menuMode = menuactive != MENU_Off;
+	const bool chatInputMode = chatmodeon != 0;
 	const bool keybindCaptureMode = menuactive == MENU_WaitKey;
-	const bool gameplayMode = gamestate == GS_LEVEL && !menuMode && !paused;
+	const bool gameplayMode = gamestate == GS_LEVEL && !menuMode && !chatInputMode && !paused;
 	const int mainHand = GetMainHandIndex();
 	const int offHand = GetOffHandIndex();
 	const int movementHand = *vr_switch_sticks ? mainHand : offHand;
@@ -3145,15 +3211,15 @@ void VKOpenXRDeviceMode::UpdateControllerState() const
 		handInput[mainHand].grip &&
 		dominantFace2Pressed;
 	const bool menuOpenDown = menuButtonDown || legacyMenuComboDown;
-	if (!keybindCaptureMode && menuOpenDown != xrLastMenuReturnState)
+	if (!keybindCaptureMode && !chatInputMode && menuOpenDown != xrLastMenuReturnState)
 	{
 		PostControllerKeyTransition(xrLastMenuReturnState, menuOpenDown, KEY_ESCAPE);
 	}
-	if (!keybindCaptureMode && menuOpenDown && !xrLastMenuReturnState)
+	if (!keybindCaptureMode && !chatInputMode && menuOpenDown && !xrLastMenuReturnState)
 	{
 		RequestMainMenuOpen();
 	}
-	xrLastMenuReturnState = keybindCaptureMode ? false : menuOpenDown;
+	xrLastMenuReturnState = (keybindCaptureMode || chatInputMode) ? false : menuOpenDown;
 
 	const bool dominantGripModifierNew = *vr_secondary_button_mappings && handInput[mainHand].grip;
 	const bool dominantGripModifierOld = *vr_secondary_button_mappings && xrLastGripState[mainHand];
@@ -4718,7 +4784,7 @@ bool VKOpenXRDeviceMode::ShouldRenderVirtualScreen() const
 	const int effectiveOverlayMode = (vr_overlayscreen == 0) ? 2 : vr_overlayscreen;
 	const bool overlayEnabled = (effectiveOverlayMode > 0) || vr_overlayscreen_always;
 	return ShouldUseScreenLayerForCurrentFrame() &&
-		(gamestate != GS_LEVEL || menuactive != MENU_Off || cinemamode || ConsoleState != c_up || vr_overlayscreen_always) &&
+		(gamestate != GS_LEVEL || menuactive != MENU_Off || cinemamode || ConsoleState != c_up || chatmodeon != 0 || vr_overlayscreen_always) &&
 		overlayEnabled;
 }
 
@@ -4744,7 +4810,7 @@ bool VKOpenXRDeviceMode::RenderVirtualScreen() const
 	}
 	xrVirtualScreenWasVisibleLastFrame = true;
 
-	const bool forceOverlay = gamestate != GS_LEVEL || menuactive != MENU_Off || cinemamode || ConsoleState != c_up || vr_overlayscreen_always;
+	const bool forceOverlay = gamestate != GS_LEVEL || menuactive != MENU_Off || cinemamode || ConsoleState != c_up || chatmodeon != 0 || vr_overlayscreen_always;
 	const bool allowBlankOverlay = vr_overlayscreen_always || cinemamode || gamestate != GS_LEVEL;
 	xrMenuPointerBeamImageIndex = -1;
 	if (twod == nullptr || (twod->DrawCount() == 0 && !allowBlankOverlay && !forceOverlay))

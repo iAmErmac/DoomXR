@@ -526,6 +526,7 @@ if (ENABLE_OPENXR)
 	
 	set(OPENXR_SOURCES
 		common/rendering/stereo3d/openxr/oxr_loader.cpp
+		common/rendering/stereo3d/openxr/oxr_keyboard.cpp
 	)
 	if (HAVE_VULKAN)
 		set(OPENXR_SOURCES ${OPENXR_SOURCES}

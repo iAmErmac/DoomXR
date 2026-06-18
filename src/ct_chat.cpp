@@ -41,10 +41,17 @@
 #include "v_video.h"
 #include "utf8.h"
 #include "gstrings.h"
+#include "menu.h"
 #include "vm.h"
 #include "c_buttons.h"
 #include "d_buttons.h"
 #include "v_draw.h"
+
+#ifdef __ANDROID__
+void DOOMXR_ShowTextInput();
+void DOOMXR_HideTextInput();
+bool DOOMXR_IsMetaKeyboardEnabled();
+#endif
 
 enum
 {
@@ -72,8 +79,11 @@ static void CT_AddChar (int c);
 static void CT_BackSpace ();
 static void ShoveChatStr (const char *str, uint8_t who);
 static bool DoSubstitution (FString &out, const char *in);
+static bool UseMetaChatTextEntryMenu();
 
 static TArray<uint8_t> ChatQueue;
+static bool gMetaChatTextEntryActive = false;
+static bool gMetaChatTextEntryTeam = false;
 
 CVAR (String, chatmacro1, "I'm ready to kick butt!", CVAR_ARCHIVE)
 CVAR (String, chatmacro2, "I'm OK.", CVAR_ARCHIVE)
@@ -124,6 +134,10 @@ void CT_Init ()
 void CT_Stop ()
 {
 	chatmodeon = 0;
+	M_ResetButtonStates();
+#ifdef __ANDROID__
+	DOOMXR_HideTextInput();
+#endif
 }
 
 //===========================================================================
@@ -199,6 +213,47 @@ bool CT_Responder (event_t *ev)
 	}
 
 	return false;
+}
+
+static bool UseMetaChatTextEntryMenu()
+{
+#ifdef __ANDROID__
+	return DOOMXR_IsMetaKeyboardEnabled();
+#else
+	return false;
+#endif
+}
+
+void CT_OpenTextEntryMenu(bool teamChat)
+{
+	M_ResetButtonStates();
+	C_HideConsole();
+	CT_ClearChatMessage();
+	chatmodeon = 0;
+	gMetaChatTextEntryActive = true;
+	gMetaChatTextEntryTeam = teamChat;
+	M_SetMenu(FName("ChatTextEnterMenu"), -1);
+}
+
+void CT_SubmitTextEntryMenuMessage(const char* text)
+{
+	if (text != nullptr && *text != '\0')
+	{
+		ShoveChatStr(text, gMetaChatTextEntryTeam ? 1 : 0);
+	}
+	gMetaChatTextEntryActive = false;
+	gMetaChatTextEntryTeam = false;
+}
+
+void CT_CancelTextEntryMenu()
+{
+	gMetaChatTextEntryActive = false;
+	gMetaChatTextEntryTeam = false;
+}
+
+bool CT_IsTextEntryMenuTeamChat()
+{
+	return gMetaChatTextEntryActive && gMetaChatTextEntryTeam;
 }
 
 //===========================================================================
@@ -510,10 +565,19 @@ CCMD (messagemode)
 {
 	if (menuactive == MENU_Off)
 	{
-		buttonMap.ResetButtonStates();
+		if (UseMetaChatTextEntryMenu())
+		{
+			CT_OpenTextEntryMenu(false);
+			return;
+		}
+
+		M_ResetButtonStates();
 		chatmodeon = 1;
 		C_HideConsole ();
 		CT_ClearChatMessage ();
+#ifdef __ANDROID__
+		DOOMXR_ShowTextInput();
+#endif
 	}
 }
 
@@ -533,10 +597,19 @@ CCMD (messagemode2)
 {
 	if (menuactive == MENU_Off)
 	{
-		buttonMap.ResetButtonStates();
+		if (UseMetaChatTextEntryMenu())
+		{
+			CT_OpenTextEntryMenu(true);
+			return;
+		}
+
+		M_ResetButtonStates();
 		chatmodeon = 2;
 		C_HideConsole ();
 		CT_ClearChatMessage ();
+#ifdef __ANDROID__
+		DOOMXR_ShowTextInput();
+#endif
 	}
 }
 

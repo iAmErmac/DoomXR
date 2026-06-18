@@ -108,6 +108,7 @@ bool	G_CheckDemoStatus (void);
 void	G_ReadDemoTiccmd (ticcmd_t *cmd, int player);
 void	G_WriteDemoTiccmd (ticcmd_t *cmd, int player, int buf);
 void	G_PlayerReborn (int player);
+void	CT_Stop ();
 
 void	G_DoNewGame (void);
 void	G_DoLoadGame (void);
@@ -1224,6 +1225,22 @@ bool G_Responder (event_t *ev)
 
 	if (CT_Responder (ev))
 		return true;			// chat ate the event
+
+	if (chatmodeon)
+	{
+		if (ev->type == EV_KeyDown)
+		{
+			if (ev->data1 == KEY_ESCAPE || ev->data1 == KEY_PAD_B)
+			{
+				CT_Stop();
+			}
+			return true;
+		}
+		if (ev->type == EV_KeyUp)
+		{
+			return true;
+		}
+	}
 
 	if ((ConsoleState != c_up || gamestate == GS_FULLCONSOLE) && ev->type == EV_KeyDown)
 	{

@@ -78,6 +78,20 @@
 #include "sbar.h"
 #include "decallib.h"
 #include "version.h"
+
+#ifdef __ANDROID__
+static bool sConsoleTextEnterMenuOpen = false;
+static bool sConsoleAutoPaused = false;
+void DOOMXR_ShowTextInput();
+void DOOMXR_HideTextInput();
+CUSTOM_CVAR(Bool, vr_meta_keyboard, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (!self)
+	{
+		DOOMXR_HideTextInput();
+	}
+}
+#endif
 #include "st_start.h"
 #include "teaminfo.h"
 #include "hardware.h"
@@ -3241,33 +3255,39 @@ FString System_GetPlayerName(int node)
 
 void System_ConsoleToggled(int state)
 {
-	static bool consoleTextEnterMenuOpen = false;
-	static bool consoleAutoPaused = false;
-
 	if ((state == c_falling || state == c_down) && menuactive == MENU_Off)
 	{
 		if (CurrentMenu == nullptr)
 		{
 			M_SetMenu(FName("ConsoleTextEnterMenu"), -1);
-			consoleTextEnterMenuOpen = (CurrentMenu != nullptr);
+			sConsoleTextEnterMenuOpen = (CurrentMenu != nullptr);
+#ifdef __ANDROID__
+			if (sConsoleTextEnterMenuOpen)
+			{
+				DOOMXR_ShowTextInput();
+			}
+#endif
 		}
-		if (consoleTextEnterMenuOpen && !consoleAutoPaused && gamestate == GS_LEVEL && !netgame && paused == 0 && !pauseext)
+		if (sConsoleTextEnterMenuOpen && !sConsoleAutoPaused && gamestate == GS_LEVEL && !netgame && paused == 0 && !pauseext)
 		{
-			consoleAutoPaused = true;
+			sConsoleAutoPaused = true;
 			paused = 1;
 			S_PauseSound(false, false);
 		}
 	}
-	else if (consoleTextEnterMenuOpen && (state == c_rising || state == c_up))
+	else if (sConsoleTextEnterMenuOpen && (state == c_rising || state == c_up))
 	{
 		M_ClearMenus();
-		if (consoleAutoPaused)
+		if (sConsoleAutoPaused)
 		{
-			consoleAutoPaused = false;
+			sConsoleAutoPaused = false;
 			paused = 0;
 			S_ResumeSound(false);
 		}
-		consoleTextEnterMenuOpen = false;
+		sConsoleTextEnterMenuOpen = false;
+#ifdef __ANDROID__
+		DOOMXR_HideTextInput();
+#endif
 	}
 
 	if (state == c_falling && hud_toggled)

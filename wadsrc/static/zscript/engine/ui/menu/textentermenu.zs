@@ -78,6 +78,7 @@ class TextEnterMenu : Menu
 		AllowColors = allowcolors; // [TP]
 		displayFont = dpf;
 		CursorSize = displayFont.StringWidth(displayFont.GetCursor());
+		Menu.SetVirtualTextInputActive(true);
 	}
 
 	// This had to be deprecated because the unit for maxlen is 8 pixels.
@@ -105,6 +106,12 @@ class TextEnterMenu : Menu
 	String GetText()
 	{
 		return mEnterString;
+	}
+
+	override void OnDestroy()
+	{
+		Menu.SetVirtualTextInputActive(false);
+		Super.OnDestroy();
 	}
 
 	override bool TranslateKeyboardEvents()

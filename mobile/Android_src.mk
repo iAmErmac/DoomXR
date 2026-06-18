@@ -305,6 +305,7 @@ PCH_SOURCES = \
 	rendering/hwrenderer/scene/hw_setcolor.cpp \
 	gl/stereo3d/gl_openxrdevice.cpp \
 	common/rendering/stereo3d/openxr/oxr_loader.cpp \
+	common/rendering/stereo3d/openxr/oxr_keyboard.cpp \
 	common/rendering/vulkan/stereo3d/vk_openxrdevice.cpp \
 	maploader/edata.cpp \
 	maploader/specials.cpp \

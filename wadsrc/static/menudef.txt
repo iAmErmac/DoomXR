@@ -3072,6 +3072,10 @@ OptionMenu VROptionsMenu protected
 	Option "$VRPREFMNU_SWITCH_THUMBSTICKS",		"vr_switch_sticks", "OnOff", vr_joy_mode
 	Option "$VRPREFMNU_VIRTUAL_MOUSE",				"vr_mouse_in_menu", "OnOff"
 	ColorPicker "$VRPREFMNU_MOUSE_POINTER",		"vr_menu_pointer_color"
+	ifOption(OpenXR)
+	{
+		Option "$VRPREFMNU_VIRTUAL_KEYBOARD",		"vr_meta_keyboard", "OnOff"
+	}
 	Option "$VRPREFMNU_SECONDARY_BUTTON_MAPPINGS",	"vr_secondary_button_mappings", "OnOff", vr_joy_mode
 	Option "$VRPREFMNU_TWO_HANDED_WEAPONS",		"vr_two_handed_weapons", "OnOff"
 	StaticText " "
